@@ -1,16 +1,39 @@
 # PDF Editor
 
-Browser-based PDF viewer/editor. Everything runs client-side — no file ever leaves the browser.
+Browser-based PDF viewer/editor with a **touch-first UI**, packaged as an **Android app** via Capacitor. Everything runs client-side — no file ever leaves the device.
 
-**Stack:** Next.js 16 (App Router) · React 19 · TypeScript · Tailwind v4 · shadcn-style UI · `pdfjs-dist` (render) · `pdf-lib` (export, upcoming).
+**Stack:** Next.js 16 (App Router, static export) · React 19 · TypeScript · Tailwind v4 · shadcn-style UI · `pdfjs-dist` (render) · `pdf-lib` + `@pdf-lib/fontkit` (export) · `jszip` (image bundles) · **Capacitor 8** (Android shell).
 
-## Run
+## Run (web)
 
 ```bash
 npm install
 npm run dev      # http://localhost:3000  (auto-copies the pdf.js worker first)
-npm run build    # production build (typechecks + lints)
+npm run build    # static export to ./out  (typechecks + lints)
 ```
+
+## Android app (Capacitor)
+
+The web build is a static export (`out/`) that Capacitor wraps into an APK.
+
+```bash
+# 1. build the web assets and copy them into the native project
+npm run cap:sync                 # = next build && cap sync android
+
+# 2. build the debug APK (needs Android SDK + a JDK Gradle supports — JDK 21-23,
+#    NOT 25; Gradle 8.14 here tops out at JDK 24)
+cd android
+JAVA_HOME="/c/Program Files/Java/jdk-23" \
+ANDROID_HOME="$LOCALAPPDATA/Android/Sdk" \
+  ./gradlew assembleDebug
+
+# → android/app/build/outputs/apk/debug/app-debug.apk   (sideload onto a phone)
+```
+
+App id `com.armitorenk.pdfeditor`, `compileSdk`/`targetSdk` 36, `minSdk` 24. The
+`android/` native project is committed; build outputs and the copied web assets
+(`app/src/main/assets/public`) are gitignored, so run `npm run cap:sync` after a
+fresh clone before building.
 
 ## Architecture
 

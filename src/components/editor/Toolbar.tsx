@@ -61,7 +61,7 @@ export function Toolbar({
   onExport,
 }: ToolbarProps) {
   return (
-    <header className="flex h-14 shrink-0 items-center gap-3 border-b border-neutral-200 bg-white px-3">
+    <header className="hidden h-14 shrink-0 items-center gap-3 border-b border-neutral-200 bg-white px-3 md:flex">
       <div className="flex items-center gap-2 font-semibold text-neutral-900">
         <FileText className="h-5 w-5 text-blue-600" />
         <span className="hidden sm:inline">PDF Editor</span>

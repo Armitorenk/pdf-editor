@@ -12,7 +12,25 @@
   --font-mono: var(--font-geist-mono);
 }
 
+html,
+body {
+  /* Stop the page itself from scrolling/bouncing (pull-to-refresh) — only the
+     viewer scrolls. Important for the app feel inside the Android webview. */
+  overscroll-behavior: none;
+}
+
 body {
   background: var(--background);
   color: var(--foreground);
+  /* Avoid the 300ms tap delay and let our own pointer handlers own gestures. */
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Safe-area helpers for notches / gesture bars (viewport-fit: cover). */
+.pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
 }

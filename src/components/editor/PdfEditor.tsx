@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { FileUp, Loader2 } from "lucide-react";
+import { FileUp, ImagePlus, Loader2, Maximize, ZoomIn, ZoomOut } from "lucide-react";
 import { usePdfDocument } from "@/hooks/usePdfDocument";
 import { cn } from "@/lib/utils";
 import { downloadBlob, downloadBytes } from "@/lib/download";
@@ -19,6 +19,7 @@ import {
   type TextEdit,
 } from "@/lib/pdf/types";
 import { Toolbar } from "./Toolbar";
+import { MobileToolbar } from "./MobileToolbar";
 import { AnnotationToolbar } from "./AnnotationToolbar";
 import { ThumbnailSidebar } from "./ThumbnailSidebar";
 import { PdfViewer, type ViewerApi } from "./PdfViewer";
@@ -54,6 +55,7 @@ export function PdfEditor() {
   const [activePage, setActivePage] = useState(0);
   const [firstPageSize, setFirstPageSize] = useState<PageSize | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [pagesOpen, setPagesOpen] = useState(false); // mobile pages drawer
 
   const [editMode, setEditMode] = useState<EditMode>("view");
   const [pageOrder, setPageOrder] = useState<PageRef[]>([]);
@@ -338,6 +340,20 @@ export function PdfEditor() {
         onExport={handleExport}
       />
 
+      <MobileToolbar
+        fileName={fileName}
+        numPages={pageOrder.length}
+        activePage={activePage}
+        hasDoc={!!ready}
+        editMode={editMode}
+        editCount={Object.keys(textEdits).length}
+        isExporting={isExporting}
+        onUploadClick={openFilePicker}
+        onOpenPages={() => setPagesOpen(true)}
+        onSetMode={setMode}
+        onExport={handleExport}
+      />
+
       {editMode === "annotate" && ready && (
         <AnnotationToolbar
           tool={annotationTool}
@@ -361,6 +377,8 @@ export function PdfEditor() {
             onReorder={reorderPages}
             onDeletePage={deletePage}
             onAddBlankPage={addBlankPage}
+            mobileOpen={pagesOpen}
+            onCloseMobile={() => setPagesOpen(false)}
           />
         )}
 
@@ -400,14 +418,44 @@ export function PdfEditor() {
             <EmptyState status={status} error={error} isDragging={isDragging} onUploadClick={openFilePicker} />
           )}
 
+          {/* Verbose hint: desktop only (mobile uses the bottom controls / FAB). */}
           {editMode !== "view" && ready && (
-            <div className="pointer-events-none absolute bottom-4 left-1/2 z-30 -translate-x-1/2 rounded-full bg-neutral-900/90 px-4 py-1.5 text-sm text-white shadow-lg">
+            <div className="pointer-events-none absolute bottom-4 left-1/2 z-30 hidden -translate-x-1/2 rounded-full bg-neutral-900/90 px-4 py-1.5 text-sm text-white shadow-lg md:block">
               {editMode === "text"
                 ? "Click any text to edit · Enter to save · Esc to cancel"
                 : editMode === "image"
                   ? "Add an image, then drag to move · drag the corner to resize · trash to delete"
                   : "Draw on the page · pick a tool, colour and width above"}
             </div>
+          )}
+
+          {/* Mobile-only: floating zoom pill + contextual "Add image" FAB. */}
+          {ready && (
+            <div
+              className="absolute bottom-4 right-3 z-30 flex flex-col overflow-hidden rounded-full border border-neutral-200 bg-white shadow-lg md:hidden"
+              style={{ marginBottom: "env(safe-area-inset-bottom)" }}
+            >
+              <button onClick={zoomIn} aria-label="Zoom in" className="flex h-12 w-12 items-center justify-center text-neutral-700 active:bg-neutral-100">
+                <ZoomIn className="h-5 w-5" />
+              </button>
+              <button onClick={fitWidth} aria-label="Fit width" className="flex h-10 w-12 items-center justify-center border-y border-neutral-200 text-neutral-700 active:bg-neutral-100">
+                <Maximize className="h-4 w-4" />
+              </button>
+              <button onClick={zoomOut} aria-label="Zoom out" className="flex h-12 w-12 items-center justify-center text-neutral-700 active:bg-neutral-100">
+                <ZoomOut className="h-5 w-5" />
+              </button>
+            </div>
+          )}
+
+          {editMode === "image" && ready && (
+            <button
+              onClick={openImagePicker}
+              className="absolute bottom-5 left-1/2 z-30 flex h-12 -translate-x-1/2 items-center gap-2 rounded-full bg-blue-600 px-5 font-medium text-white shadow-lg active:bg-blue-700 md:hidden"
+              style={{ marginBottom: "env(safe-area-inset-bottom)" }}
+            >
+              <ImagePlus className="h-5 w-5" />
+              Add image
+            </button>
           )}
         </div>
       </div>

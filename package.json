@@ -9,9 +9,13 @@
     "prebuild": "node scripts/copy-pdf-worker.mjs",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "cap:sync": "next build && cap sync android"
   },
   "dependencies": {
+    "@capacitor/android": "^8.4.1",
+    "@capacitor/cli": "^8.4.1",
+    "@capacitor/core": "^8.4.1",
     "@pdf-lib/fontkit": "^1.1.1",
     "clsx": "^2.1.1",
     "jszip": "^3.10.1",

@@ -157,16 +157,19 @@ function ImageItem({
             onPointerDown={(e) => e.stopPropagation()}
             onClick={() => onDelete(img.id)}
             aria-label="Delete image"
-            className="absolute -right-3 -top-3 flex h-6 w-6 items-center justify-center rounded-full bg-red-600 text-white shadow hover:bg-red-500"
+            className="absolute -right-4 -top-4 flex h-9 w-9 items-center justify-center rounded-full bg-red-600 text-white shadow-md active:bg-red-700 hover:bg-red-500"
           >
-            <Trash2 className="h-3.5 w-3.5" />
+            <Trash2 className="h-4 w-4" />
           </button>
+          {/* Big invisible touch target around a small visible nub. */}
           <div
             onPointerDown={start("resize")}
             onPointerMove={move}
             onPointerUp={end}
-            className="absolute -bottom-1.5 -right-1.5 h-4 w-4 cursor-nwse-resize rounded-sm border-2 border-blue-500 bg-white"
-          />
+            className="absolute -bottom-5 -right-5 flex h-10 w-10 cursor-nwse-resize items-center justify-center"
+          >
+            <span className="h-5 w-5 rounded-sm border-2 border-blue-500 bg-white shadow" />
+          </div>
         </>
       )}
     </div>
