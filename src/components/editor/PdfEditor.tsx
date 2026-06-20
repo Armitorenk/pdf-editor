@@ -1,12 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { FileUp, ImagePlus, Loader2, Maximize, ZoomIn, ZoomOut } from "lucide-react";
+import { ImagePlus, Loader2, Maximize, ZoomIn, ZoomOut } from "lucide-react";
 import { usePdfDocument } from "@/hooks/usePdfDocument";
 import { cn } from "@/lib/utils";
 import { saveFile } from "@/lib/save";
 import { exportPdf } from "@/lib/pdf/export";
 import { extractText, imagesToZip, pdfToImages, type ExportFormat } from "@/lib/pdf/convert";
+import {
+  deleteProject,
+  listProjects,
+  loadProject,
+  saveProject,
+  type ProjectMeta,
+} from "@/lib/projects";
 import type { Rect } from "@/lib/pdf/coordinates";
 import {
   textEditKey,
@@ -22,6 +29,7 @@ import { Toolbar } from "./Toolbar";
 import { MobileToolbar } from "./MobileToolbar";
 import { AnnotationToolbar } from "./AnnotationToolbar";
 import { ThumbnailSidebar } from "./ThumbnailSidebar";
+import { ProjectLibrary } from "./ProjectLibrary";
 import { PdfViewer, type ViewerApi } from "./PdfViewer";
 
 const MIN_SCALE = 0.25;
@@ -64,28 +72,51 @@ export function PdfEditor() {
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [annotationTool, setAnnotationTool] = useState<AnnotationTool>("pen");
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   const [annotationColor, setAnnotationColor] = useState("#ef4444");
   const [annotationWidth, setAnnotationWidth] = useState(2);
   const [isExporting, setIsExporting] = useState(false);
+
+  // --- Project library / persistence ---
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [thumbnail, setThumbnail] = useState<string | null>(null);
+  const [projects, setProjects] = useState<ProjectMeta[]>([]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const mainRef = useRef<HTMLDivElement>(null);
   const viewerApiRef = useRef<ViewerApi | null>(null);
+  // Holds saved state to apply once a reopened project's pdf.js doc has loaded.
+  const restoreRef = useRef<{
+    pageOrder: PageRef[];
+    textEdits: Record<string, TextEdit>;
+    images: ImageOverlay[];
+    annotations: Annotation[];
+  } | null>(null);
 
   const { doc, numPages, status, error } = usePdfDocument(fileBytes);
 
-  // Build the initial page order (originals, in order) when a document loads.
+  // When a document loads: restore a reopened project's saved edits, or build the
+  // default page order (originals, in order) for a fresh upload.
   useEffect(() => {
     if (!doc) return;
     let cancelled = false;
-    setPageOrder(
-      Array.from({ length: doc.numPages }, (_, i) => ({
-        id: `orig:${i}`,
-        kind: "original" as const,
-        originalIndex: i,
-      })),
-    );
+    const restore = restoreRef.current;
+    restoreRef.current = null;
+    if (restore) {
+      setPageOrder(restore.pageOrder);
+      setTextEdits(restore.textEdits);
+      setImageOverlays(restore.images);
+      setAnnotations(restore.annotations);
+    } else {
+      setPageOrder(
+        Array.from({ length: doc.numPages }, (_, i) => ({
+          id: `orig:${i}`,
+          kind: "original" as const,
+          originalIndex: i,
+        })),
+      );
+    }
     (async () => {
       const { width, height } = (await doc.getPage(1)).getViewport({ scale: 1 });
       if (!cancelled) setFirstPageSize({ width, height });
@@ -95,9 +126,64 @@ export function PdfEditor() {
     };
   }, [doc]);
 
-  const loadFile = useCallback(async (file: File) => {
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    setFileName(file.name);
+  // Generate a page-1 thumbnail for the library whenever a document loads.
+  useEffect(() => {
+    if (!doc) return;
+    let cancelled = false;
+    (async () => {
+      const page = await doc.getPage(1);
+      const base = page.getViewport({ scale: 1 });
+      const v = page.getViewport({ scale: 200 / base.width });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.ceil(v.width);
+      canvas.height = Math.ceil(v.height);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvas, viewport: v }).promise;
+      if (!cancelled) setThumbnail(canvas.toDataURL("image/jpeg", 0.6));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [doc]);
+
+  // Refresh the library list on mount.
+  const refreshProjects = useCallback(async () => {
+    try {
+      setProjects(await listProjects());
+    } catch (err) {
+      console.error("Failed to list projects:", err);
+    }
+  }, []);
+  useEffect(() => {
+    void refreshProjects();
+  }, [refreshProjects]);
+
+  // Auto-save the open project (debounced) whenever its content changes.
+  useEffect(() => {
+    if (!projectId || !fileBytes || !doc) return;
+    const handle = setTimeout(() => {
+      void saveProject({
+        id: projectId,
+        name: fileName ?? "Untitled.pdf",
+        pageCount: pageOrder.length,
+        thumbnail: thumbnail ?? undefined,
+        pdfBytes: fileBytes,
+        pageOrder,
+        textEdits,
+        images: imageOverlays,
+        annotations,
+      })
+        .then(refreshProjects)
+        .catch((err) => console.error("Auto-save failed:", err));
+    }, 800);
+    return () => clearTimeout(handle);
+  }, [projectId, fileBytes, doc, fileName, pageOrder, textEdits, imageOverlays, annotations, thumbnail, refreshProjects]);
+
+  /** Reset all per-document state; `restore` carries saved edits for a reopen. */
+  const resetEditorState = useCallback(() => {
     setActivePage(0);
     setScale(DEFAULT_SCALE);
     setFirstPageSize(null);
@@ -110,13 +196,72 @@ export function PdfEditor() {
     });
     setSelectedImageId(null);
     setAnnotations([]);
-    setFileBytes(bytes);
+    setSelectedAnnotationId(null);
   }, []);
 
-  /** Switch tools; image selection only matters while in image mode. */
+  const loadFile = useCallback(
+    async (file: File) => {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      restoreRef.current = null;
+      resetEditorState();
+      setFileName(file.name);
+      setThumbnail(null);
+      setProjectId(crypto.randomUUID()); // a fresh upload becomes a new project
+      setFileBytes(bytes);
+    },
+    [resetEditorState],
+  );
+
+  /** Open a saved project: restore its edits once its document has loaded. */
+  const openProject = useCallback(
+    async (meta: ProjectMeta) => {
+      const data = await loadProject(meta.id);
+      if (!data) return;
+      resetEditorState();
+      restoreRef.current = {
+        pageOrder: data.pageOrder,
+        textEdits: data.textEdits,
+        images: data.images,
+        annotations: data.annotations,
+      };
+      setFileName(meta.name);
+      setThumbnail(meta.thumbnail ?? null);
+      setProjectId(meta.id);
+      setFileBytes(data.pdfBytes);
+    },
+    [resetEditorState],
+  );
+
+  /** Close the open document and return to the library (auto-save already ran). */
+  const closeProject = useCallback(() => {
+    restoreRef.current = null;
+    resetEditorState();
+    setFileName(null);
+    setThumbnail(null);
+    setProjectId(null);
+    setFileBytes(null);
+    void refreshProjects();
+  }, [resetEditorState, refreshProjects]);
+
+  const handleDeleteProject = useCallback(
+    async (id: string) => {
+      await deleteProject(id);
+      await refreshProjects();
+    },
+    [refreshProjects],
+  );
+
+  /** Switch tools; object selections only matter within their own mode. */
   const setMode = useCallback((mode: EditMode) => {
     setEditMode(mode);
     if (mode !== "image") setSelectedImageId(null);
+    if (mode !== "annotate") setSelectedAnnotationId(null);
+  }, []);
+
+  /** Pick the annotation tool; leaving "select" clears any current selection. */
+  const pickAnnotationTool = useCallback((tool: AnnotationTool) => {
+    setAnnotationTool(tool);
+    if (tool !== "select") setSelectedAnnotationId(null);
   }, []);
 
   // --- Text edits -----------------------------------------------------------
@@ -190,7 +335,24 @@ export function PdfEditor() {
   const clearPageAnnotations = useCallback(() => {
     const ref = pageOrder[activePage];
     if (ref) setAnnotations((prev) => prev.filter((a) => a.pageId !== ref.id));
+    setSelectedAnnotationId(null);
   }, [pageOrder, activePage]);
+
+  const moveAnnotation = useCallback((id: string, dx: number, dy: number) => {
+    setAnnotations((prev) =>
+      prev.map((a) => {
+        if (a.id !== id) return a;
+        return a.kind === "pen"
+          ? { ...a, points: a.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) }
+          : { ...a, x: a.x + dx, y: a.y + dy };
+      }),
+    );
+  }, []);
+
+  const deleteAnnotation = useCallback((id: string) => {
+    setAnnotations((prev) => prev.filter((a) => a.id !== id));
+    setSelectedAnnotationId((cur) => (cur === id ? null : cur));
+  }, []);
 
   // --- Page management ------------------------------------------------------
   const reorderPages = useCallback((from: number, to: number) => {
@@ -339,6 +501,7 @@ export function PdfEditor() {
         onToggleAnnotateMode={() => setMode(editMode === "annotate" ? "view" : "annotate")}
         onAddImage={openImagePicker}
         onExport={handleExport}
+        onHome={closeProject}
       />
 
       <MobileToolbar
@@ -353,6 +516,7 @@ export function PdfEditor() {
         onOpenPages={() => setPagesOpen(true)}
         onSetMode={setMode}
         onExport={handleExport}
+        onHome={closeProject}
       />
 
       {editMode === "annotate" && ready && (
@@ -360,7 +524,7 @@ export function PdfEditor() {
           tool={annotationTool}
           color={annotationColor}
           strokeWidth={annotationWidth}
-          onToolChange={setAnnotationTool}
+          onToolChange={pickAnnotationTool}
           onColorChange={setAnnotationColor}
           onWidthChange={setAnnotationWidth}
           onUndo={undoAnnotation}
@@ -412,11 +576,27 @@ export function PdfEditor() {
               annotationColor={annotationColor}
               annotationWidth={annotationWidth}
               onAddAnnotation={addAnnotation}
+              selectedAnnotationId={selectedAnnotationId}
+              onSelectAnnotation={setSelectedAnnotationId}
+              onMoveAnnotation={moveAnnotation}
+              onDeleteAnnotation={deleteAnnotation}
               apiRef={viewerApiRef}
               onActivePageChange={setActivePage}
             />
+          ) : status === "loading" ? (
+            <div className="flex h-full flex-col items-center justify-center gap-3 text-neutral-500">
+              <Loader2 className="h-8 w-8 animate-spin" />
+              <p>Loading PDF…</p>
+            </div>
           ) : (
-            <EmptyState status={status} error={error} isDragging={isDragging} onUploadClick={openFilePicker} />
+            <ProjectLibrary
+              projects={projects}
+              isDragging={isDragging}
+              error={error}
+              onOpenFile={openFilePicker}
+              onOpenProject={openProject}
+              onDeleteProject={handleDeleteProject}
+            />
           )}
 
           {/* Verbose hint: desktop only (mobile uses the bottom controls / FAB). */}
@@ -464,41 +644,3 @@ export function PdfEditor() {
   );
 }
 
-interface EmptyStateProps {
-  status: ReturnType<typeof usePdfDocument>["status"];
-  error: string | null;
-  isDragging: boolean;
-  onUploadClick: () => void;
-}
-
-function EmptyState({ status, error, isDragging, onUploadClick }: EmptyStateProps) {
-  if (status === "loading") {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 text-neutral-500">
-        <Loader2 className="h-8 w-8 animate-spin" />
-        <p>Loading PDF…</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex h-full items-center justify-center p-6">
-      <button
-        onClick={onUploadClick}
-        className={cn(
-          "flex w-full max-w-md flex-col items-center gap-3 rounded-xl border-2 border-dashed p-12 text-center transition-colors",
-          isDragging ? "border-blue-500 bg-blue-50" : "border-neutral-300 bg-white hover:border-neutral-400",
-        )}
-      >
-        <FileUp className="h-10 w-10 text-blue-600" />
-        <span className="text-lg font-medium text-neutral-800">Drop a PDF here, or click to browse</span>
-        <span className="text-sm text-neutral-500">Everything stays in your browser — nothing is uploaded.</span>
-        {status === "error" && (
-          <span className="mt-2 rounded-md bg-red-50 px-3 py-1.5 text-sm text-red-600">
-            {error ?? "Could not open that file."}
-          </span>
-        )}
-      </button>
-    </div>
-  );
-}

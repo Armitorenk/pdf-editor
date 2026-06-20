@@ -1,10 +1,11 @@
 "use client";
 
-import { Circle, Highlighter, Pen, Square, Trash2, Undo2 } from "lucide-react";
+import { Circle, Highlighter, MousePointer2, Pen, Square, Trash2, Undo2 } from "lucide-react";
 import type { AnnotationTool } from "@/lib/pdf/types";
 import { cn } from "@/lib/utils";
 
 const TOOLS: { tool: AnnotationTool; label: string; Icon: typeof Pen }[] = [
+  { tool: "select", label: "Select / move / delete", Icon: MousePointer2 },
   { tool: "pen", label: "Pen", Icon: Pen },
   { tool: "highlight", label: "Highlight", Icon: Highlighter },
   { tool: "rect", label: "Rectangle", Icon: Square },
@@ -56,30 +57,36 @@ export function AnnotationToolbar({
 
       <div className="mx-1 h-6 w-px shrink-0 bg-neutral-200" />
 
-      <label className="flex shrink-0 items-center gap-1.5 text-neutral-600">
-        Color
-        <input
-          type="color"
-          value={color}
-          onChange={(e) => onColorChange(e.target.value)}
-          className="h-9 w-10 cursor-pointer rounded border border-neutral-300 bg-white p-0.5"
-        />
-      </label>
+      {tool === "select" ? (
+        <span className="shrink-0 whitespace-nowrap text-neutral-500">Tap an object to move or delete it</span>
+      ) : (
+        <>
+          <label className="flex shrink-0 items-center gap-1.5 text-neutral-600">
+            Color
+            <input
+              type="color"
+              value={color}
+              onChange={(e) => onColorChange(e.target.value)}
+              className="h-9 w-10 cursor-pointer rounded border border-neutral-300 bg-white p-0.5"
+            />
+          </label>
 
-      <label className="flex shrink-0 items-center gap-1.5 text-neutral-600">
-        Width
-        <select
-          value={strokeWidth}
-          onChange={(e) => onWidthChange(Number(e.target.value))}
-          className="h-9 rounded-md border border-neutral-300 bg-white px-2"
-        >
-          {WIDTHS.map((w) => (
-            <option key={w} value={w}>
-              {w}pt
-            </option>
-          ))}
-        </select>
-      </label>
+          <label className="flex shrink-0 items-center gap-1.5 text-neutral-600">
+            Width
+            <select
+              value={strokeWidth}
+              onChange={(e) => onWidthChange(Number(e.target.value))}
+              className="h-9 rounded-md border border-neutral-300 bg-white px-2"
+            >
+              {WIDTHS.map((w) => (
+                <option key={w} value={w}>
+                  {w}pt
+                </option>
+              ))}
+            </select>
+          </label>
+        </>
+      )}
 
       <div className="ml-auto flex shrink-0 items-center gap-1 pl-2">
         <button

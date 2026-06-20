@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  ChevronLeft,
   FileText,
   Image as ImageIcon,
   ImagePlus,
@@ -37,6 +38,7 @@ interface ToolbarProps {
   onToggleAnnotateMode: () => void;
   onAddImage: () => void;
   onExport: (format: ExportFormat) => void;
+  onHome: () => void;
 }
 
 /** Top application bar: branding, file info, upload, and zoom controls. */
@@ -59,13 +61,24 @@ export function Toolbar({
   onToggleAnnotateMode,
   onAddImage,
   onExport,
+  onHome,
 }: ToolbarProps) {
   return (
     <header className="hidden h-14 shrink-0 items-center gap-3 border-b border-neutral-200 bg-white px-3 md:flex">
-      <div className="flex items-center gap-2 font-semibold text-neutral-900">
-        <FileText className="h-5 w-5 text-blue-600" />
-        <span className="hidden sm:inline">PDF Editor</span>
-      </div>
+      {hasDoc ? (
+        <button
+          onClick={onHome}
+          className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm font-medium text-neutral-700 hover:bg-neutral-100"
+        >
+          <ChevronLeft className="h-4 w-4" />
+          Projects
+        </button>
+      ) : (
+        <div className="flex items-center gap-2 font-semibold text-neutral-900">
+          <FileText className="h-5 w-5 text-blue-600" />
+          <span className="hidden sm:inline">PDF Editor</span>
+        </div>
+      )}
 
       {fileName && (
         <span className="max-w-[28ch] truncate text-sm text-neutral-500" title={fileName}>

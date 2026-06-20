@@ -49,14 +49,16 @@ src/
     ui/button.tsx             # shadcn-style primitive (cn + variants)
     editor/
       PdfEditor.tsx           # top-level: owns bytes + all edit state, composes everything
-      Toolbar.tsx             # upload, zoom, mode toggles, page indicator
+      ProjectLibrary.tsx      # home screen: open PDF + saved-project grid (open/delete)
+      Toolbar.tsx             # desktop: upload, zoom, mode toggles, page indicator
+      MobileToolbar.tsx       # touch: two-row toolbar, full-width mode switcher
       ExportMenu.tsx          # "Export ▾" dropdown: PDF / PNG / JPEG / text
-      ThumbnailSidebar.tsx    # page thumbnails: click to jump, drag-reorder, delete, +blank
+      ThumbnailSidebar.tsx    # pages: desktop rail + mobile drawer; reorder/delete/+blank
       PdfViewer.tsx           # scrollable viewer; renders slot-by-slot from pageOrder
       PdfPageCanvas.tsx       # one page -> canvas, lazy (IntersectionObserver), HiDPI
-      TextLayer.tsx           # detect text runs; click to edit inline
-      ImageLayer.tsx          # placed images: drag-move, aspect-locked resize, delete
-      AnnotationLayer.tsx     # pen / highlight / rect / ellipse drawing overlay
+      TextLayer.tsx           # detect text runs; click to edit; WYSIWYG edit preview
+      ImageLayer.tsx          # placed images: drag-move, free corner resize, delete
+      AnnotationLayer.tsx     # pen / highlight / rect / ellipse + select/move/delete
       AnnotationToolbar.tsx   # annotation sub-toolbar (tool · colour · width · undo · clear)
   hooks/
     usePdfDocument.ts         # File bytes -> pdf.js document (race-safe, cleans up)
@@ -68,6 +70,8 @@ src/
       export.ts               # rebuild PDF from pageOrder + bake every edit (pdf-lib)
       convert.ts              # edited PDF -> PNG/JPEG (pdf.js + JSZip) and text extraction
       types.ts                # PageRef, TextEdit, ImageOverlay, Annotation, …
+    projects.ts               # IndexedDB project store (meta + data); save/list/load/delete
+    save.ts                   # platform save: Capacitor Share on native, download on web
     download.ts               # downloadBlob() / downloadBytes()
     utils.ts                  # cn()
   scripts/copy-pdf-worker.mjs # copies the worker into /public (offline, version-locked)
@@ -111,19 +115,27 @@ the two coordinate systems never drift.
       with smooth scroll, zoom (in/out/reset/fit-width), HiDPI-crisp output, lazy
       per-page rendering, clickable thumbnail navigation, active-page tracking.
 - [x] **Step 2 — Text editing:** "Edit text" mode overlays detected text runs
-      (`getTextContent`); click a run to edit inline (Enter saves, Esc cancels) with
-      a live white-cover preview. **Download** bakes edits into a new PDF via pdf-lib,
-      embedding a Unicode font (Noto Sans) so Turkish/non-Latin-1 text exports
-      correctly. Edits are keyed `pageId:itemIndex` and reset on file change.
-      _Limits: edits one detected run (≈word/line fragment) at a time; export assumes
-      black text on light background and does not reproduce the original font face._
+      (`getTextContent`); click a run to edit inline (Enter saves, Esc cancels).
+      Committed edits render as a **WYSIWYG white-cover + new text in every mode**
+      (drawn from each edit's stored PDF-space geometry, so untouched pages cost
+      nothing) — the page already looks like the file you'll download. **Download**
+      bakes edits into a new PDF via pdf-lib, embedding a Unicode font (Noto Sans) so
+      Turkish/non-Latin-1 text exports correctly. Edits are keyed `pageId:itemIndex`
+      and reset on file change. _Limits: edits one detected run (≈word/line fragment)
+      at a time; export assumes black text on light background and does not reproduce
+      the original font face._
 - [x] **Step 3 — Image placement:** "Image" mode + "Add" uploads a PNG/JPG, placed
-      centred on the active page. Drag to move, aspect-locked corner handle to resize,
-      trash to delete. Geometry stored in PDF points; export embeds the image
-      (`embedPng`/`embedJpg`) and draws it via the unified `exportPdf` pipeline.
+      centred on the active page. Drag to move, **four corner handles for free
+      (non-aspect-locked) resize** — the opposite corner stays anchored, so a square
+      can be stretched into any rectangle — trash to delete. Geometry stored in PDF
+      points; export embeds the image (`embedPng`/`embedJpg`) and draws it via the
+      unified `exportPdf` pipeline.
 - [x] **Step 4 — Annotations:** "Annotate" mode opens a sub-toolbar (tool · colour ·
       width · undo · clear page). Freehand **pen**, semi-transparent **highlight**,
       **rectangle**, and **ellipse**, drawn on an overlay and stored in PDF points.
+      A **Select tool** lets you tap an individual object to pick it (topmost wins),
+      drag to move it, and delete it with one button — the touch-friendly way to
+      remove a single drawing (no per-object handle / right-click on a phone).
       Export bakes them via `drawLine` / filled-rect-with-opacity / border-rect /
       `drawEllipse`.
 - [x] **Step 5 — Page management:** thumbnail rail supports drag-to-reorder, per-page
@@ -141,3 +153,16 @@ the two coordinate systems never drift.
       document (the cover-box export leaves old glyphs in the stream) and applies
       text edits + page order by the same `pageId:itemIndex` key. See
       `src/lib/pdf/convert.ts`.
+- [x] **Step 8 — Project library (on-device persistence):** the home screen is a
+      **library** of saved projects (thumbnail · name · page count) plus "Open PDF".
+      Opening a file creates a project; all edits (page order, text, images,
+      annotations) **auto-save debounced** to **IndexedDB** — works identically in
+      the browser and inside the Android WebView (no server). Reopen to continue
+      where you left off, or delete when done. A first-page JPEG thumbnail is
+      generated on load. See `src/lib/projects.ts` (two stores: tiny `meta` for the
+      list, `data` for the PDF bytes + edits) and `src/components/editor/ProjectLibrary.tsx`.
+- [x] **Step 9 — Save/share on Android:** `<a download>` does nothing inside a
+      WebView, so `src/lib/save.ts` routes every export through the **Capacitor
+      Filesystem + Share** plugins on native (write to cache → system share sheet →
+      "Save to Files" / Drive / WhatsApp), falling back to the browser download on
+      web.

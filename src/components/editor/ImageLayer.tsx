@@ -67,7 +67,12 @@ export function ImageLayer({
   );
 }
 
-type DragState = { kind: "move" | "resize"; startX: number; startY: number; origin: Rect } | null;
+/** Which corner is being dragged; the opposite corner stays anchored. */
+type Corner = "tl" | "tr" | "bl" | "br";
+type DragState =
+  | { kind: "move"; startX: number; startY: number; origin: Rect }
+  | { kind: "resize"; corner: Corner; startX: number; startY: number; origin: Rect }
+  | null;
 
 interface ImageItemProps {
   img: ImageOverlay;
@@ -100,13 +105,23 @@ function ImageItem({
   );
   const dom = liveDom ?? baseDom;
 
-  const start = (kind: "move" | "resize") => (e: React.PointerEvent<HTMLElement>) => {
+  const startMove = (e: React.PointerEvent<HTMLElement>) => {
     if (!interactive) return;
     e.preventDefault();
     e.stopPropagation();
     onSelect(img.id);
     e.currentTarget.setPointerCapture(e.pointerId);
-    setDrag({ kind, startX: e.clientX, startY: e.clientY, origin: baseDom });
+    setDrag({ kind: "move", startX: e.clientX, startY: e.clientY, origin: baseDom });
+    setLiveDom(baseDom);
+  };
+
+  const startResize = (corner: Corner) => (e: React.PointerEvent<HTMLElement>) => {
+    if (!interactive) return;
+    e.preventDefault();
+    e.stopPropagation();
+    onSelect(img.id);
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setDrag({ kind: "resize", corner, startX: e.clientX, startY: e.clientY, origin: baseDom });
     setLiveDom(baseDom);
   };
 
@@ -114,14 +129,27 @@ function ImageItem({
     if (!drag) return;
     const dx = e.clientX - drag.startX;
     const dy = e.clientY - drag.startY;
+    const o = drag.origin;
+
     if (drag.kind === "move") {
-      setLiveDom({ ...drag.origin, x: drag.origin.x + dx, y: drag.origin.y + dy });
-    } else {
-      // Aspect-locked resize from the bottom-right corner; top-left stays put.
-      const aspect = drag.origin.width / drag.origin.height;
-      const width = Math.max(MIN_PX, drag.origin.width + dx);
-      setLiveDom({ x: drag.origin.x, y: drag.origin.y, width, height: width / aspect });
+      setLiveDom({ ...o, x: o.x + dx, y: o.y + dy });
+      return;
     }
+
+    // Free (non-aspect-locked) resize: drag a corner, the opposite corner stays put.
+    const right = o.x + o.width;
+    const bottom = o.y + o.height;
+    const left = drag.corner === "tl" || drag.corner === "bl";
+    const top = drag.corner === "tl" || drag.corner === "tr";
+
+    let width = o.width + (left ? -dx : dx);
+    let height = o.height + (top ? -dy : dy);
+    width = Math.max(MIN_PX, width);
+    height = Math.max(MIN_PX, height);
+    // Anchor the side that isn't moving.
+    const x = left ? right - width : o.x;
+    const y = top ? bottom - height : o.y;
+    setLiveDom({ x, y, width, height });
   };
 
   const end = (e: React.PointerEvent<HTMLElement>) => {
@@ -145,7 +173,7 @@ function ImageItem({
         src={img.src}
         alt=""
         draggable={false}
-        onPointerDown={start("move")}
+        onPointerDown={startMove}
         onPointerMove={move}
         onPointerUp={end}
         className={cn("h-full w-full select-none", interactive && "cursor-move")}
@@ -161,15 +189,25 @@ function ImageItem({
           >
             <Trash2 className="h-4 w-4" />
           </button>
-          {/* Big invisible touch target around a small visible nub. */}
-          <div
-            onPointerDown={start("resize")}
-            onPointerMove={move}
-            onPointerUp={end}
-            className="absolute -bottom-5 -right-5 flex h-10 w-10 cursor-nwse-resize items-center justify-center"
-          >
-            <span className="h-5 w-5 rounded-sm border-2 border-blue-500 bg-white shadow" />
-          </div>
+
+          {/* Four corner handles — drag any to stretch freely (aspect not locked). */}
+          {(["tl", "tr", "bl", "br"] as Corner[]).map((corner) => (
+            <div
+              key={corner}
+              onPointerDown={startResize(corner)}
+              onPointerMove={move}
+              onPointerUp={end}
+              className={cn(
+                "absolute flex h-10 w-10 items-center justify-center",
+                corner === "tl" && "-left-5 -top-5 cursor-nwse-resize",
+                corner === "tr" && "-right-5 -top-5 cursor-nesw-resize",
+                corner === "bl" && "-bottom-5 -left-5 cursor-nesw-resize",
+                corner === "br" && "-bottom-5 -right-5 cursor-nwse-resize",
+              )}
+            >
+              <span className="h-4 w-4 rounded-sm border-2 border-blue-500 bg-white shadow" />
+            </div>
+          ))}
         </>
       )}
     </div>

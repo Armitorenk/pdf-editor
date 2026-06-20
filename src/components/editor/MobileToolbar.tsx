@@ -1,6 +1,6 @@
 "use client";
 
-import { FileText, Layers, Pencil, Image as ImageIcon, Type, Upload, Eye } from "lucide-react";
+import { ChevronLeft, FileText, Layers, Pencil, Image as ImageIcon, Type, Upload, Eye } from "lucide-react";
 import { ExportMenu } from "./ExportMenu";
 import type { ExportFormat } from "@/lib/pdf/convert";
 import type { EditMode } from "@/lib/pdf/types";
@@ -25,6 +25,7 @@ interface MobileToolbarProps {
   onOpenPages: () => void;
   onSetMode: (mode: EditMode) => void;
   onExport: (format: ExportFormat) => void;
+  onHome: () => void;
 }
 
 /**
@@ -45,11 +46,22 @@ export function MobileToolbar({
   onOpenPages,
   onSetMode,
   onExport,
+  onHome,
 }: MobileToolbarProps) {
   return (
     <header className="shrink-0 border-b border-neutral-200 bg-white pt-safe md:hidden">
       <div className="flex h-14 items-center gap-2 px-3">
-        <FileText className="h-6 w-6 shrink-0 text-blue-600" />
+        {hasDoc ? (
+          <button
+            onClick={onHome}
+            aria-label="Back to projects"
+            className="-ml-1 flex h-11 w-9 items-center justify-center text-neutral-700 active:bg-neutral-100"
+          >
+            <ChevronLeft className="h-6 w-6" />
+          </button>
+        ) : (
+          <FileText className="h-6 w-6 shrink-0 text-blue-600" />
+        )}
 
         <div className="min-w-0 flex-1">
           {fileName ? (

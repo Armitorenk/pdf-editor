@@ -22,26 +22,46 @@ interface TextLayerProps {
   pageNumber: number;
   /** Stable id of the page slot this layer belongs to. */
   pageId: string;
+  /** Page height in PDF points — used to place edits when not detecting text. */
+  pageHeight: number;
   scale: number;
+  /** When false, the layer is a read-only WYSIWYG preview (no hit-boxes). */
+  interactive: boolean;
   edits: Record<string, TextEdit>;
   onCommit: (edit: TextEdit) => void;
   onRemove: (key: string) => void;
 }
 
 /**
- * Editable overlay aligned to a page's canvas. Detects text runs with
- * `getTextContent()`, draws a transparent hit-box over each, and on click swaps in
- * an input. Committed edits show a white-on-canvas preview that mirrors what the
- * pdf-lib export will bake in. Positions are recomputed from the live viewport, so
- * the overlay tracks zoom automatically.
+ * Editable overlay aligned to a page's canvas.
+ *
+ * - **Interactive (text mode):** detects runs with `getTextContent()`, draws a
+ *   transparent hit-box over each, and on click swaps in an input.
+ * - **Always (every mode):** committed edits are painted as a white cover + the new
+ *   text, exactly as the pdf-lib export bakes them — so the page is WYSIWYG and the
+ *   user can see what the downloaded PDF will look like without staying in text mode.
+ *
+ * The read-only preview is drawn from each edit's stored PDF-space geometry, so
+ * pages with no edits cost nothing (no text detection).
  */
-export function TextLayer({ doc, pageNumber, pageId, scale, edits, onCommit, onRemove }: TextLayerProps) {
+export function TextLayer({
+  doc,
+  pageNumber,
+  pageId,
+  pageHeight,
+  scale,
+  interactive,
+  edits,
+  onCommit,
+  onRemove,
+}: TextLayerProps) {
   const pageRef = useRef<PDFPageProxy | null>(null);
   const [items, setItems] = useState<DetectedText[] | null>(null);
   const [editingKey, setEditingKey] = useState<string | null>(null);
 
-  // Detect text runs once per page.
+  // Detect text runs once per page — only needed while editing.
   useEffect(() => {
+    if (!interactive) return;
     let cancelled = false;
     (async () => {
       const page = await doc.getPage(pageNumber);
@@ -59,7 +79,36 @@ export function TextLayer({ doc, pageNumber, pageId, scale, edits, onCommit, onR
     return () => {
       cancelled = true;
     };
-  }, [doc, pageNumber]);
+  }, [doc, pageNumber, interactive]);
+
+  // --- Read-only preview (any non-text mode): paint committed edits only. --------
+  if (!interactive) {
+    const pageEdits = Object.values(edits).filter((e) => e.pageId === pageId);
+    if (pageEdits.length === 0) return null;
+    return (
+      <div className="pointer-events-none absolute inset-0">
+        {pageEdits.map((edit) => {
+          const fontPx = edit.fontSize * scale;
+          const baselineDomY = (pageHeight - edit.y) * scale; // flip Y (un-rotated)
+          return (
+            <span
+              key={textEditKey(edit.pageId, edit.itemIndex)}
+              style={{
+                left: edit.x * scale,
+                top: baselineDomY - fontPx,
+                minWidth: Math.max(edit.width * scale, fontPx * 0.4),
+                height: fontPx * 1.25,
+                fontSize: fontPx,
+              }}
+              className="absolute box-content whitespace-nowrap bg-white px-0.5 font-sans leading-none text-black"
+            >
+              {edit.newText}
+            </span>
+          );
+        })}
+      </div>
+    );
+  }
 
   if (!items || !pageRef.current) return null;
   const viewport = pageRef.current.getViewport({ scale });

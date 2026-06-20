@@ -43,6 +43,10 @@ interface PdfViewerProps {
   annotationColor: string;
   annotationWidth: number;
   onAddAnnotation: (ann: Annotation) => void;
+  selectedAnnotationId: string | null;
+  onSelectAnnotation: (id: string | null) => void;
+  onMoveAnnotation: (id: string, dx: number, dy: number) => void;
+  onDeleteAnnotation: (id: string) => void;
 
   apiRef?: React.RefObject<ViewerApi | null>;
   onActivePageChange?: (slotIndex: number) => void;
@@ -164,14 +168,20 @@ export function PdfViewer(props: PdfViewerProps) {
                 color={props.annotationColor}
                 strokeWidth={props.annotationWidth}
                 onAdd={props.onAddAnnotation}
+                selectedId={props.selectedAnnotationId}
+                onSelect={props.onSelectAnnotation}
+                onMove={props.onMoveAnnotation}
+                onDelete={props.onDeleteAnnotation}
               />
 
-              {editMode === "text" && ref.kind === "original" && (
+              {ref.kind === "original" && (
                 <TextLayer
                   doc={doc}
                   pageNumber={ref.originalIndex + 1}
                   pageId={ref.id}
+                  pageHeight={size.height}
                   scale={scale}
+                  interactive={editMode === "text"}
                   edits={props.textEdits}
                   onCommit={props.onCommitTextEdit}
                   onRemove={props.onRemoveTextEdit}

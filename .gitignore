@@ -42,3 +42,6 @@ next-env.d.ts
 
 # generated: pdf.js worker is copied from node_modules by predev/prebuild hooks
 /public/pdf.worker.min.mjs
+
+# local Gradle build log
+/android-build.log

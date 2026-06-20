@@ -56,8 +56,8 @@ export interface ImageOverlay {
   aspect: number; // naturalWidth / naturalHeight
 }
 
-/** Annotation tools. */
-export type AnnotationTool = "pen" | "highlight" | "rect" | "ellipse";
+/** Annotation tools. `select` = tap to pick an existing object, then move/delete. */
+export type AnnotationTool = "select" | "pen" | "highlight" | "rect" | "ellipse";
 
 interface AnnotationBase {
   id: string;
