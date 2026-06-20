@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { FileUp, ImagePlus, Loader2, Maximize, ZoomIn, ZoomOut } from "lucide-react";
 import { usePdfDocument } from "@/hooks/usePdfDocument";
 import { cn } from "@/lib/utils";
-import { downloadBlob, downloadBytes } from "@/lib/download";
+import { saveFile } from "@/lib/save";
 import { exportPdf } from "@/lib/pdf/export";
 import { extractText, imagesToZip, pdfToImages, type ExportFormat } from "@/lib/pdf/convert";
 import type { Rect } from "@/lib/pdf/coordinates";
@@ -241,7 +241,7 @@ export function PdfEditor() {
 
         if (format === "txt") {
           const text = await extractText(doc, pageOrder, textEdits);
-          downloadBlob(new Blob([text], { type: "text/plain;charset=utf-8" }), `${base}.txt`);
+          await saveFile(`${base}.txt`, new Blob([text], { type: "text/plain;charset=utf-8" }));
           return;
         }
 
@@ -253,17 +253,18 @@ export function PdfEditor() {
         });
 
         if (format === "pdf") {
-          downloadBytes(pdfBytes, `${base}-edited.pdf`);
+          await saveFile(`${base}-edited.pdf`, new Blob([pdfBytes as BlobPart], { type: "application/pdf" }));
           return;
         }
 
-        // png | jpeg: rasterise the edited PDF; one page downloads directly, more
-        // than one is bundled into a ZIP.
+        // png | jpeg: rasterise the edited PDF; one page saves directly, more than
+        // one is bundled into a ZIP.
+        const ext = format === "png" ? "png" : "jpg";
         const images = await pdfToImages(pdfBytes, format);
         if (images.length === 1) {
-          downloadBlob(images[0].blob, `${base}.${format === "png" ? "png" : "jpg"}`);
+          await saveFile(`${base}.${ext}`, images[0].blob);
         } else {
-          downloadBlob(await imagesToZip(images), `${base}-${format === "png" ? "png" : "jpg"}.zip`);
+          await saveFile(`${base}-${ext}.zip`, await imagesToZip(images));
         }
       } catch (err) {
         console.error("Export failed:", err);

@@ -20,8 +20,9 @@ The web build is a static export (`out/`) that Capacitor wraps into an APK.
 # 1. build the web assets and copy them into the native project
 npm run cap:sync                 # = next build && cap sync android
 
-# 2. build the debug APK (needs Android SDK + a JDK Gradle supports — JDK 21-23,
-#    NOT 25; Gradle 8.14 here tops out at JDK 24)
+# 2. build the debug APK. Run Gradle on JDK 21-23 (NOT 25 — Gradle 8.14 tops out
+#    at JDK 24). The Capacitor plugins pin a Java 21 toolchain, which Gradle
+#    auto-downloads (foojay resolver in settings.gradle) if you don't have it.
 cd android
 JAVA_HOME="/c/Program Files/Java/jdk-23" \
 ANDROID_HOME="$LOCALAPPDATA/Android/Sdk" \
