@@ -24,11 +24,16 @@ src/
   components/
     ui/button.tsx             # shadcn-style primitive (cn + variants)
     editor/
-      PdfEditor.tsx           # top-level: owns bytes + view state, composes everything
-      Toolbar.tsx             # upload, zoom, page indicator
-      ThumbnailSidebar.tsx    # lazy page thumbnails; click to jump
-      PdfViewer.tsx           # scrollable multi-page canvas; reports/drives scroll
+      PdfEditor.tsx           # top-level: owns bytes + all edit state, composes everything
+      Toolbar.tsx             # upload, zoom, mode toggles, page indicator
+      ExportMenu.tsx          # "Export ▾" dropdown: PDF / PNG / JPEG / text
+      ThumbnailSidebar.tsx    # page thumbnails: click to jump, drag-reorder, delete, +blank
+      PdfViewer.tsx           # scrollable viewer; renders slot-by-slot from pageOrder
       PdfPageCanvas.tsx       # one page -> canvas, lazy (IntersectionObserver), HiDPI
+      TextLayer.tsx           # detect text runs; click to edit inline
+      ImageLayer.tsx          # placed images: drag-move, aspect-locked resize, delete
+      AnnotationLayer.tsx     # pen / highlight / rect / ellipse drawing overlay
+      AnnotationToolbar.tsx   # annotation sub-toolbar (tool · colour · width · undo · clear)
   hooks/
     usePdfDocument.ts         # File bytes -> pdf.js document (race-safe, cleans up)
   lib/
@@ -36,7 +41,10 @@ src/
       pdfjs.ts                # browser-only lazy loader; wires the worker
       render.ts               # renderPageToCanvas() — DPR-aware, cancellable
       coordinates.ts          # *** DOM <-> PDF coordinate mapping (read this) ***
-      types.ts
+      export.ts               # rebuild PDF from pageOrder + bake every edit (pdf-lib)
+      convert.ts              # edited PDF -> PNG/JPEG (pdf.js + JSZip) and text extraction
+      types.ts                # PageRef, TextEdit, ImageOverlay, Annotation, …
+    download.ts               # downloadBlob() / downloadBytes()
     utils.ts                  # cn()
   scripts/copy-pdf-worker.mjs # copies the worker into /public (offline, version-locked)
 ```
@@ -102,3 +110,10 @@ the two coordinate systems never drift.
       inserting blanks) and bakes all edits, matched to pages by `pageId`. Verified
       in Node against a 509-page PDF (reorder + blank + Turkish text + image + all
       four annotation kinds → valid `%PDF`).
+- [x] **Step 7 — Format conversion:** the "Export ▾" menu offers **PDF**, **PNG**,
+      **JPEG**, and **plain text**. Image formats rasterise the *edited* PDF with
+      pdf.js (so they include every edit) — one page downloads directly, multiple
+      pages are bundled into a ZIP (JSZip). Text extraction reads the *original*
+      document (the cover-box export leaves old glyphs in the stream) and applies
+      text edits + page order by the same `pageId:itemIndex` key. See
+      `src/lib/pdf/convert.ts`.

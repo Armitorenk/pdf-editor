@@ -1,11 +1,9 @@
 "use client";
 
 import {
-  Download,
   FileText,
   Image as ImageIcon,
   ImagePlus,
-  Loader2,
   Maximize,
   Pencil,
   Type,
@@ -14,6 +12,8 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ExportMenu } from "./ExportMenu";
+import type { ExportFormat } from "@/lib/pdf/convert";
 import type { EditMode } from "@/lib/pdf/types";
 import { cn } from "@/lib/utils";
 
@@ -36,7 +36,7 @@ interface ToolbarProps {
   onToggleImageMode: () => void;
   onToggleAnnotateMode: () => void;
   onAddImage: () => void;
-  onExport: () => void;
+  onExport: (format: ExportFormat) => void;
 }
 
 /** Top application bar: branding, file info, upload, and zoom controls. */
@@ -147,14 +147,7 @@ export function Toolbar({
               Annotate
             </Button>
 
-            <Button variant="outline" size="sm" onClick={onExport} disabled={isExporting}>
-              {isExporting ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Download className="h-4 w-4" />
-              )}
-              Download
-            </Button>
+            <ExportMenu isExporting={isExporting} onExport={onExport} />
           </>
         )}
 

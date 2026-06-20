@@ -4,8 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { FileUp, Loader2 } from "lucide-react";
 import { usePdfDocument } from "@/hooks/usePdfDocument";
 import { cn } from "@/lib/utils";
-import { downloadBytes } from "@/lib/download";
+import { downloadBlob, downloadBytes } from "@/lib/download";
 import { exportPdf } from "@/lib/pdf/export";
+import { extractText, imagesToZip, pdfToImages, type ExportFormat } from "@/lib/pdf/convert";
 import type { Rect } from "@/lib/pdf/coordinates";
 import {
   textEditKey,
@@ -225,26 +226,52 @@ export function PdfEditor() {
     ]);
   }, [firstPageSize]);
 
-  // --- Export ---------------------------------------------------------------
-  const handleExport = useCallback(async () => {
-    if (!fileBytes) return;
-    setIsExporting(true);
-    try {
-      const bytes = await exportPdf(fileBytes, {
-        pageOrder,
-        textEdits: Object.values(textEdits),
-        images: imageOverlays,
-        annotations,
-      });
-      const base = fileName?.replace(/\.pdf$/i, "") ?? "document";
-      downloadBytes(bytes, `${base}-edited.pdf`);
-    } catch (err) {
-      console.error("Export failed:", err);
-      alert("Export failed. See the console for details.");
-    } finally {
-      setIsExporting(false);
-    }
-  }, [fileBytes, pageOrder, textEdits, imageOverlays, annotations, fileName]);
+  // --- Export / convert -----------------------------------------------------
+  // Every format starts from the same edited PDF, so image/PDF outputs all reflect
+  // the current edits. Text is the exception: it reads the original document (see
+  // extractText) to avoid the export's covered-but-still-present original glyphs.
+  const handleExport = useCallback(
+    async (format: ExportFormat) => {
+      if (!fileBytes || !doc) return;
+      setIsExporting(true);
+      try {
+        const base = fileName?.replace(/\.pdf$/i, "") ?? "document";
+
+        if (format === "txt") {
+          const text = await extractText(doc, pageOrder, textEdits);
+          downloadBlob(new Blob([text], { type: "text/plain;charset=utf-8" }), `${base}.txt`);
+          return;
+        }
+
+        const pdfBytes = await exportPdf(fileBytes, {
+          pageOrder,
+          textEdits: Object.values(textEdits),
+          images: imageOverlays,
+          annotations,
+        });
+
+        if (format === "pdf") {
+          downloadBytes(pdfBytes, `${base}-edited.pdf`);
+          return;
+        }
+
+        // png | jpeg: rasterise the edited PDF; one page downloads directly, more
+        // than one is bundled into a ZIP.
+        const images = await pdfToImages(pdfBytes, format);
+        if (images.length === 1) {
+          downloadBlob(images[0].blob, `${base}.${format === "png" ? "png" : "jpg"}`);
+        } else {
+          downloadBlob(await imagesToZip(images), `${base}-${format === "png" ? "png" : "jpg"}.zip`);
+        }
+      } catch (err) {
+        console.error("Export failed:", err);
+        alert("Export failed. See the console for details.");
+      } finally {
+        setIsExporting(false);
+      }
+    },
+    [fileBytes, doc, pageOrder, textEdits, imageOverlays, annotations, fileName],
+  );
 
   // --- Upload / zoom / nav --------------------------------------------------
   const openFilePicker = useCallback(() => fileInputRef.current?.click(), []);
