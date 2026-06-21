@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import type { Rect } from "@/lib/pdf/coordinates";
 import type {
@@ -27,6 +27,8 @@ export interface ViewerApi {
 interface PdfViewerProps {
   doc: PDFDocumentProxy;
   scale: number;
+  /** Set the zoom level (used by the two-finger pinch gesture). */
+  onZoom: (next: number) => void;
   editMode: EditMode;
   pageOrder: PageRef[];
 
@@ -65,8 +67,87 @@ interface PdfViewerProps {
  * scroll position stays stable; rasterising is still deferred per page.
  */
 export function PdfViewer(props: PdfViewerProps) {
-  const { doc, scale, editMode, pageOrder, apiRef, onActivePageChange } = props;
+  const { doc, scale, onZoom, editMode, pageOrder, apiRef, onActivePageChange } = props;
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // --- Pinch-to-zoom -------------------------------------------------------
+  // Two-finger pinch drives the same `scale` the toolbar buttons use, so pages
+  // re-render crisply at the new zoom (no blurry CSS transform). The pinch midpoint
+  // is kept anchored: we remember the content point under it and, after each scale
+  // change, restore the scroll so that point stays under the fingers.
+  const scaleRef = useRef(scale);
+  const onZoomRef = useRef(onZoom);
+  useEffect(() => {
+    scaleRef.current = scale;
+    onZoomRef.current = onZoom;
+  });
+  const anchorRef = useRef<{ ax: number; ay: number; midX: number; midY: number } | null>(null);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const p = { active: false, startDist: 0, startScale: 1 };
+    let raf = 0;
+    let pendingFactor = 1;
+    const dist = (t: TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+    const onStart = (e: TouchEvent) => {
+      if (e.touches.length !== 2) return;
+      const rect = el.getBoundingClientRect();
+      const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+      const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
+      p.active = true;
+      p.startDist = dist(e.touches);
+      p.startScale = scaleRef.current;
+      // Content point (in scale-1 units) currently under the pinch midpoint.
+      anchorRef.current = {
+        ax: (el.scrollLeft + midX) / scaleRef.current,
+        ay: (el.scrollTop + midY) / scaleRef.current,
+        midX,
+        midY,
+      };
+    };
+    const onMove = (e: TouchEvent) => {
+      if (!p.active || e.touches.length !== 2) return;
+      e.preventDefault(); // stop native scroll/zoom fighting the gesture
+      pendingFactor = dist(e.touches) / (p.startDist || 1);
+      // Throttle to one zoom update per frame so pages don't re-render per touch event.
+      if (!raf) {
+        raf = requestAnimationFrame(() => {
+          raf = 0;
+          onZoomRef.current(p.startScale * pendingFactor);
+        });
+      }
+    };
+    const onEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) {
+        p.active = false;
+        anchorRef.current = null;
+        if (raf) {
+          cancelAnimationFrame(raf);
+          raf = 0;
+        }
+      }
+    };
+    el.addEventListener("touchstart", onStart, { passive: true });
+    el.addEventListener("touchmove", onMove, { passive: false });
+    el.addEventListener("touchend", onEnd);
+    el.addEventListener("touchcancel", onEnd);
+    return () => {
+      el.removeEventListener("touchstart", onStart);
+      el.removeEventListener("touchmove", onMove);
+      el.removeEventListener("touchend", onEnd);
+      el.removeEventListener("touchcancel", onEnd);
+    };
+  }, []);
+
+  // After a pinch changes `scale`, re-anchor the scroll to the pinch midpoint.
+  useLayoutEffect(() => {
+    const a = anchorRef.current;
+    const el = containerRef.current;
+    if (!a || !el) return;
+    el.scrollLeft = a.ax * scale - a.midX;
+    el.scrollTop = a.ay * scale - a.midY;
+  }, [scale]);
   const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
   const [slotSizes, setSlotSizes] = useState<PageSize[] | null>(null);
 

@@ -777,6 +777,7 @@ export function PdfEditor() {
             <PdfViewer
               doc={doc}
               scale={scale}
+              onZoom={(s) => setScale(clampScale(s))}
               editMode={editMode}
               pageOrder={pageOrder}
               textEdits={textEdits}
