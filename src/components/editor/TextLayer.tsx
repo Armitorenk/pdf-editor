@@ -68,7 +68,7 @@ function measureTextPx(cssFamily: string, text: string, sizePx: number): number 
   if (!probeEl) {
     probeEl = document.createElement("span");
     probeEl.style.cssText =
-      "position:absolute;left:-9999px;top:-9999px;visibility:hidden;white-space:nowrap;padding:0;margin:0;border:0;line-height:1;";
+      "position:absolute;left:-9999px;top:-9999px;visibility:hidden;white-space:pre;padding:0;margin:0;border:0;line-height:1;";
     document.body.appendChild(probeEl);
   }
   probeEl.style.fontFamily = cssFamily;
@@ -343,10 +343,9 @@ export function TextLayer({
           const fontPx = edit.fontSize * scale;
           const baselineDomY = (pageHeight - edit.y) * scale; // flip Y (un-rotated)
           const ascent = edit.ascent ?? 0.8;
-          // Ascent drop + a 0.05em lift onto the true baseline (matches the interactive layer);
-          // shared by `top` and the transform pivot so scaling stays locked to the line.
-          const baselineOffset = fontPx * 0.05;
-          const baselinePx = ascent * fontPx + baselineOffset;
+          // Pure ascent drop onto the baseline (no manual lift — the loaded font's own metrics
+          // are correct); shared by `top` and the transform pivot so scaling stays on the line.
+          const baselinePx = ascent * fontPx;
           return (
             <div
               key={textEditKey(edit.pageId, edit.itemIndex)}
@@ -366,7 +365,7 @@ export function TextLayer({
                   top: 0,
                   ...glyphStyle(edit, fontPx),
                   ...scaleStyle(edit.sizeScale ?? 1, baselinePx),
-                  letterSpacing: `${trackingPx(edit, scale, edit.sizeScale ?? 1)}px`,
+                  ...spacingStyle(edit, scale, edit.sizeScale ?? 1),
                 }}
               >
                 {edit.newText}
@@ -395,12 +394,11 @@ export function TextLayer({
         const tx = multiplyMatrix(viewport.transform, item.transform);
         const fontPx = Math.hypot(tx[2], tx[3]);
         const left = tx[4];
-        // Baseline/pivot offset within the box. tx[5] is the PDF baseline; we drop by the font
-        // ascent PLUS a small 0.05em upward lift that corrects the 1–2px sag the ascent estimate
-        // leaves on some fonts at high zoom. `top` and the transform pivot share `baselinePx`
-        // so they stay locked together (scaling can't pull the line down).
-        const baselineOffset = fontPx * 0.05;
-        const baselinePx = item.ascent * fontPx + baselineOffset;
+        // tx[5] is the PDF baseline; drop by the font ascent so the box top is right. No manual
+        // lift: the run's OWN font is FontFace-loaded, so its ascent is already correct (an extra
+        // offset over-corrected and pushed text up). `top` and the transform pivot share
+        // `baselinePx` so scaling stays locked to the line.
+        const baselinePx = item.ascent * fontPx;
         const top = tx[5] - baselinePx;
         const widthPx = Math.max(item.width * scale, fontPx * 0.4);
         const boxHeight = fontPx * 1.25;
@@ -520,7 +518,7 @@ export function TextLayer({
                   top: 0,
                   ...glyphStyle(edit, fontPx),
                   ...scaleStyle(k, baselinePx),
-                  letterSpacing: `${trackingPx(edit, scale, k)}px`,
+                  ...spacingStyle(edit, scale, k),
                 }}
               >
                 {edit.newText}
@@ -568,7 +566,10 @@ function glyphStyle(edit: TextEdit, fontPx: number): CSSProperties {
   return {
     fontSize: fontPx,
     lineHeight: 1,
-    whiteSpace: "nowrap",
+    // `pre` (not `nowrap`) keeps the run on one line BUT preserves the exact widths of the
+    // PDF's space characters (nowrap collapses runs of spaces, which shrank the box / shifted
+    // it left). No newlines in a run, so it never wraps.
+    whiteSpace: "pre",
     // Geometric precision: stop the engine snapping/hinting glyphs to the pixel grid, which
     // nudged the size a hair off the exact PDF math at high zoom.
     textRendering: "geometricPrecision",
@@ -600,24 +601,31 @@ function scaleStyle(k: number, baselinePx: number): CSSProperties {
 }
 
 /**
- * Letter-spacing (CSS px) that spreads the new text across its original box width without
- * touching the font size — so the height stays fixed and only the horizontal tracking flexes
- * to match the page. Distributes the slack between `edit.width` (box) and the text's measured
- * natural width across the characters; only stretches (never condenses). The element is
- * scaled by `k`, so the local spacing is the visual gap divided by k.
+ * Spread the slack between the run's box width and the new text's natural width so the text
+ * fills its original footprint — WITHOUT touching the font size (height stays fixed, only the
+ * horizontal tracking flexes). Multi-word strings put the slack into `word-spacing` (open the
+ * gaps BETWEEN words, leave the letters natural); a single word puts it into `letter-spacing`
+ * over the (len-1) inter-letter gaps (CSS adds a trailing gap after the last glyph, so we
+ * divide by len-1 to land the last glyph exactly on the box edge). Stretch-only and capped so
+ * a short replacement can't yawn. Values are local (pre-transform) → divided by k since the
+ * glyph span is scaled by k.
  */
-function trackingPx(edit: TextEdit, scale: number, k: number): number {
+function spacingStyle(edit: TextEdit, scale: number, k: number): CSSProperties {
   const n = edit.naturalWidth;
-  const len = Array.from(edit.newText).length;
-  // Need ≥2 chars for an inter-letter gap. CSS letter-spacing also adds a TRAILING gap after the
-  // last glyph, so spreading the slack over `len` would land the run short and look shifted.
-  // Distribute over the (len-1) gaps BETWEEN letters instead → the last glyph's right edge lands
-  // exactly on the box edge (the trailing gap is empty and harmless for our left-aligned run).
-  if (n == null || !edit.width || len < 2 || k <= 0) return 0;
-  const gapPdf = (edit.width - n) / (len - 1);
-  // Cap the per-char gap so a very short replacement in a long box doesn't rubber-band the
-  // letters across the whole width; past the cap the run stays left-aligned (max 15% of em).
-  const maxGap = (edit.fontSize ?? 12) * 0.15;
-  const clampedGap = Math.min(gapPdf, maxGap);
-  return clampedGap > 0 ? (clampedGap * scale) / k : 0;
+  if (n == null || !edit.width || k <= 0) return {};
+  const slackPdf = edit.width - n;
+  if (slackPdf <= 0) return {}; // text already fills/overflows — never condense
+  const chars = Array.from(edit.newText);
+  const em = edit.fontSize ?? 12;
+  const localPx = (gapPdf: number) => `${(gapPdf * scale) / k}px`;
+  const spaces = chars.filter((c) => c === " ").length;
+  if (spaces > 0) {
+    // Multi-word: distribute over the space characters; cap at 0.8em so words don't yawn.
+    const gap = Math.min(slackPdf / spaces, em * 0.8);
+    return { wordSpacing: localPx(gap) };
+  }
+  if (chars.length < 2) return {};
+  // Single word: distribute over the inter-letter gaps; cap at 0.15em.
+  const gap = Math.min(slackPdf / (chars.length - 1), em * 0.15);
+  return { letterSpacing: localPx(gap) };
 }
