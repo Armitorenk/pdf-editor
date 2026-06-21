@@ -343,8 +343,10 @@ export function TextLayer({
           const fontPx = edit.fontSize * scale;
           const baselineDomY = (pageHeight - edit.y) * scale; // flip Y (un-rotated)
           const ascent = edit.ascent ?? 0.8;
-          // Ascent drop + a 0.04em lift onto the true baseline (matches the interactive layer).
-          const baselinePx = ascent * fontPx + fontPx * 0.04;
+          // Ascent drop + a 0.05em lift onto the true baseline (matches the interactive layer);
+          // shared by `top` and the transform pivot so scaling stays locked to the line.
+          const baselineOffset = fontPx * 0.05;
+          const baselinePx = ascent * fontPx + baselineOffset;
           return (
             <div
               key={textEditKey(edit.pageId, edit.itemIndex)}
@@ -394,10 +396,11 @@ export function TextLayer({
         const fontPx = Math.hypot(tx[2], tx[3]);
         const left = tx[4];
         // Baseline/pivot offset within the box. tx[5] is the PDF baseline; we drop by the font
-        // ascent PLUS a tiny 0.04em upward lift that corrects the 1–2px sag the ascent estimate
-        // leaves on some fonts at high zoom. `top` and the transform pivot share this so they
-        // stay locked together.
-        const baselinePx = item.ascent * fontPx + fontPx * 0.04;
+        // ascent PLUS a small 0.05em upward lift that corrects the 1–2px sag the ascent estimate
+        // leaves on some fonts at high zoom. `top` and the transform pivot share `baselinePx`
+        // so they stay locked together (scaling can't pull the line down).
+        const baselineOffset = fontPx * 0.05;
+        const baselinePx = item.ascent * fontPx + baselineOffset;
         const top = tx[5] - baselinePx;
         const widthPx = Math.max(item.width * scale, fontPx * 0.4);
         const boxHeight = fontPx * 1.25;
@@ -606,11 +609,14 @@ function scaleStyle(k: number, baselinePx: number): CSSProperties {
 function trackingPx(edit: TextEdit, scale: number, k: number): number {
   const n = edit.naturalWidth;
   const len = Array.from(edit.newText).length;
-  if (n == null || !edit.width || len < 1 || k <= 0) return 0;
-  const gapPdf = (edit.width - n) / len; // points of slack per character
+  // Need ≥2 chars for an inter-letter gap. CSS letter-spacing also adds a TRAILING gap after the
+  // last glyph, so spreading the slack over `len` would land the run short and look shifted.
+  // Distribute over the (len-1) gaps BETWEEN letters instead → the last glyph's right edge lands
+  // exactly on the box edge (the trailing gap is empty and harmless for our left-aligned run).
+  if (n == null || !edit.width || len < 2 || k <= 0) return 0;
+  const gapPdf = (edit.width - n) / (len - 1);
   // Cap the per-char gap so a very short replacement in a long box doesn't rubber-band the
-  // letters across the whole width; past the cap the run just stays left-aligned with natural
-  // spacing (max 15% of the font size).
+  // letters across the whole width; past the cap the run stays left-aligned (max 15% of em).
   const maxGap = (edit.fontSize ?? 12) * 0.15;
   const clampedGap = Math.min(gapPdf, maxGap);
   return clampedGap > 0 ? (clampedGap * scale) / k : 0;
