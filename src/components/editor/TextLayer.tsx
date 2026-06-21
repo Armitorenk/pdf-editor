@@ -22,6 +22,10 @@ interface DetectedText {
   italic: boolean;
   /** Font ascent (fraction of em) for baseline-correct overlay placement. */
   ascent: number;
+  /** CSS family of the document's own font, injected via FontFace (when calibrated). */
+  fontFamily?: string;
+  /** Per-font size correction `k` (see {@link calibrateFonts}); 1 when not calibrated. */
+  sizeScale: number;
   /** pdf.js internal font id + resolved PostScript name (for font reuse on export). */
   fontName?: string;
   psName?: string;
@@ -30,13 +34,78 @@ interface DetectedText {
 // Cap the off-screen sampling bitmap so colour detection stays cheap on big pages.
 const SAMPLE_MAX_SIDE = 1400;
 
-// The editor previews edits in these bundled faces (the SAME ones export embeds),
-// NOT the document's raw embedded program. Earlier we injected the pdf.js-converted
-// font straight into the DOM via FontFace; in the Android WebView that program is not
-// em-normalised, so it rendered 2–3× too large. The exact embedded font still goes
-// into the downloaded PDF (export.ts reuses + size-calibrates it); on screen we use a
-// close, correctly-sized face. `font-sans`/`font-serif` map to these via globals.css.
+// Bundled fallback faces (the SAME ones export embeds) for runs whose own font we can't
+// inject/calibrate — correctly sized, close match, and never the platform UI font.
 const editFamily = (serif: boolean) => (serif ? "EditorSerif, serif" : "EditorSans, sans-serif");
+
+// Document fonts injected into the DOM so the editor shows the run's REAL typeface.
+// Keyed by CSS family; the value is a promise that resolves true once the face loads,
+// so the calibration pass can wait for it before measuring.
+const injectedFonts = new Map<string, Promise<boolean>>();
+function ensureFontFace(psName: string, data: Uint8Array): string {
+  const family = `pdffont-${psName.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+  if (!injectedFonts.has(family) && typeof FontFace !== "undefined") {
+    const load = (async () => {
+      try {
+        // Copy the bytes — pdf.js may reuse/detach the underlying buffer.
+        const face = new FontFace(family, data.slice().buffer as ArrayBuffer);
+        await face.load();
+        document.fonts.add(face);
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+    injectedFonts.set(family, load);
+  }
+  return family;
+}
+
+/**
+ * Per-font on-screen size correction. The Android WebView renders the raw pdf.js-
+ * converted program non-em-normalised, so at a given CSS `font-size` its glyphs come out
+ * 2–3× too big. We measure the injected face's REAL advance for an actual run and compare
+ * it to pdf.js's known advance, yielding a scale `k = expected / measured`; rendering the
+ * text at `fontSize * k` cancels the distortion. Same idea as export.ts's width
+ * calibration, but measured live in the DOM via canvas `measureText`. Fonts that don't
+ * load (or measure sanely) are simply left out → the caller uses the bundled face at 1×.
+ */
+async function calibrateFonts(
+  raw: { str: string; transform: number[]; width: number; fontName?: string }[],
+  cache: ReadonlyMap<string, { fontFamily?: string }>,
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (typeof document === "undefined" || !document.fonts) return out;
+  const ctx = document.createElement("canvas").getContext("2d");
+  if (!ctx) return out;
+  // Wait (bounded) for the injected faces so measureText uses them, not a fallback.
+  const families = [...new Set(Array.from(cache.values()).map((c) => c.fontFamily).filter((f): f is string => !!f))];
+  await Promise.race([
+    Promise.allSettled(families.map((f) => injectedFonts.get(f) ?? Promise.resolve())),
+    new Promise((r) => setTimeout(r, 1500)),
+  ]);
+  const M = 256; // large measuring size → a stable ratio
+  const seen = new Set<string>();
+  for (const r of raw) {
+    const key = r.fontName ?? "";
+    if (seen.has(key)) continue;
+    const family = cache.get(key)?.fontFamily;
+    if (!family) continue;
+    const fs = Math.hypot(r.transform[2], r.transform[3]);
+    if (fs <= 0 || r.width <= 0 || r.str.trim().length === 0) continue;
+    seen.add(key);
+    const spec = `${M}px "${family}"`;
+    if (!document.fonts.check(spec)) continue; // face unavailable — fall back to bundled
+    ctx.font = spec;
+    const measured = ctx.measureText(r.str).width; // px the run actually spans at size M
+    const expected = r.width * (M / fs); // px it SHOULD span (pdf.js advance, scaled to M)
+    if (measured > 1 && expected > 1) {
+      const k = expected / measured;
+      if (k > 0.2 && k < 5) out.set(key, k);
+    }
+  }
+  return out;
+}
 
 interface TextLayerProps {
   doc: PDFDocumentProxy;
@@ -150,7 +219,7 @@ export function TextLayer({
       // name + serif flag; the document-wide map gives bold/italic/serif.
       const cache = new Map<
         string,
-        { bold: boolean; italic: boolean; serif: boolean; hasMeta: boolean; psName: string | null; ascent: number }
+        { bold: boolean; italic: boolean; serif: boolean; hasMeta: boolean; psName: string | null; ascent: number; fontFamily?: string }
       >();
       const baseStyle = (fontName: string | undefined) => {
         const key = fontName ?? "";
@@ -158,11 +227,15 @@ export function TextLayer({
         if (hit) return hit;
         let psName: string | null = null;
         let serifFlag: boolean | null = null;
+        let fontFamily: string | undefined;
         try {
           const fo = fontName && page.commonObjs.has(fontName) ? page.commonObjs.get(fontName) : null;
           if (fo) {
             psName = (fo.name as string) ?? null;
             if (typeof fo.isSerifFont === "boolean") serifFlag = fo.isSerifFont;
+            // Inject the document's own font so the editor shows the real typeface; its
+            // on-screen size is corrected by the calibration pass below.
+            if (fo.data && psName) fontFamily = ensureFontFace(psName, fo.data as Uint8Array);
           }
         } catch {
           /* font not resolved — fall through to family/heuristics */
@@ -179,6 +252,7 @@ export function TextLayer({
           hasMeta: !!meta,
           psName,
           ascent,
+          fontFamily,
         };
         cache.set(key, out);
         return out;
@@ -207,10 +281,23 @@ export function TextLayer({
           bold,
           italic,
           ascent: b.ascent,
+          fontFamily: b.fontFamily,
+          sizeScale: 1,
           fontName: r.fontName,
           psName: b.psName ?? undefined,
         };
       });
+
+      // Calibrate each injected font's on-screen size (see calibrateFonts). A run keeps
+      // its OWN typeface only when we measured a sane scale; otherwise it falls back to
+      // the bundled face at 1× so it's never left oversized.
+      const scaleByFont = await calibrateFonts(raw, cache);
+      if (cancelled) return;
+      for (const d of detected) {
+        const k = scaleByFont.get(d.fontName ?? "");
+        if (k !== undefined) d.sizeScale = k;
+        else d.fontFamily = undefined;
+      }
       if (!cancelled) setItems(detected);
     })();
     return () => {
@@ -225,18 +312,20 @@ export function TextLayer({
     return (
       <div className="pointer-events-none absolute inset-0">
         {pageEdits.map((edit) => {
-          const fontPx = edit.fontSize * scale;
+          // Same calibrated size as the interactive layer: original size × zoom × the
+          // font's measured correction, so the preview matches the editor exactly.
+          const dispFontPx = edit.fontSize * scale * (edit.sizeScale ?? 1);
           const baselineDomY = (pageHeight - edit.y) * scale; // flip Y (un-rotated)
           return (
             <span
               key={textEditKey(edit.pageId, edit.itemIndex)}
               style={{
-                ...editTextStyle(edit, fontPx),
+                ...editTextStyle(edit, dispFontPx),
                 left: edit.x * scale,
                 // Place the box top an ascent above the baseline so the rendered
                 // text sits exactly on the original baseline (line-height:1).
-                top: baselineDomY - (edit.ascent ?? 0.8) * fontPx,
-                minWidth: Math.max(edit.width * scale, fontPx * 0.4),
+                top: baselineDomY - (edit.ascent ?? 0.8) * dispFontPx,
+                minWidth: Math.max(edit.width * scale, dispFontPx * 0.4),
               }}
               className="absolute box-content whitespace-nowrap px-0.5 leading-none"
             >
@@ -260,14 +349,21 @@ export function TextLayer({
 
         // Device-space (CSS px) box, from combining the viewport and text matrices.
         const tx = multiplyMatrix(viewport.transform, item.transform);
-        const fontPx = Math.hypot(tx[2], tx[3]);
+        // `fontPx` is the true on-screen size (= scale × transform[3]). When we render in
+        // the run's OWN injected font we multiply by its calibration `sizeScale` so the
+        // WebView's non-normalised program comes out at the right size; the bundled
+        // fallback needs no correction (sizeScale stays 1).
+        const dispFontPx = Math.hypot(tx[2], tx[3]) * item.sizeScale;
         const left = tx[4];
-        // tx[5] is the baseline; drop by the font ascent so the box top is right and
-        // the rendered text (line-height:1) sits on the original baseline.
-        const top = tx[5] - item.ascent * fontPx;
-        const widthPx = Math.max(item.width * scale, fontPx * 0.4);
-        const boxHeight = fontPx * 1.25;
-        const originalFamily = editFamily(item.serif);
+        // tx[5] is the baseline; drop by the font ascent so the box top is right and the
+        // rendered text (line-height:1) sits on the original baseline. Use the calibrated
+        // size so height/baseline track the actual glyph size and nothing overflows.
+        const top = tx[5] - item.ascent * dispFontPx;
+        const widthPx = Math.max(item.width * scale, dispFontPx * 0.4);
+        const boxHeight = dispFontPx * 1.25;
+        const originalFamily = item.fontFamily
+          ? `${item.fontFamily}, ${editFamily(item.serif)}`
+          : editFamily(item.serif);
 
         // PDF-space font size (zoom-independent), captured for export.
         const pdfFontSize = Math.hypot(item.transform[2], item.transform[3]);
@@ -313,6 +409,8 @@ export function TextLayer({
             strike: deco?.strike,
             fontPsName: item.psName,
             ascent: item.ascent,
+            fontFamily: item.fontFamily,
+            sizeScale: item.sizeScale,
           });
         };
 
@@ -339,7 +437,7 @@ export function TextLayer({
                 // original glyph footprint instead of pushing the layout around.
                 width: widthPx,
                 height: boxHeight,
-                fontSize: fontPx,
+                fontSize: dispFontPx,
                 fontFamily: originalFamily,
                 fontWeight: item.bold ? 700 : undefined,
                 fontStyle: item.italic ? "italic" : undefined,
@@ -356,8 +454,8 @@ export function TextLayer({
             title={edit ? `${item.str} → ${edit.newText}` : item.str}
             style={
               edit
-                ? { ...editTextStyle(edit, fontPx), left, top, width: "auto", minWidth: widthPx }
-                : { left, top, minWidth: widthPx, height: boxHeight, fontSize: fontPx }
+                ? { ...editTextStyle(edit, dispFontPx), left, top, width: "auto", minWidth: widthPx }
+                : { left, top, minWidth: widthPx, height: boxHeight, fontSize: dispFontPx }
             }
             className={cn(
               "absolute z-10 box-content cursor-text overflow-hidden whitespace-nowrap text-left leading-none",
@@ -382,10 +480,11 @@ function decorationLine(edit: TextEdit): string | undefined {
 }
 
 /**
- * Shared visual style for a committed edit's on-screen text: a correctly-sized bundled
- * face (matching what export embeds) with detected colour/weight/slant/decoration. Bold
- * also gets a small `-webkit-text-stroke` so faux-bold runs (whose font has no real bold
- * cut) still read as bold instead of staying thin.
+ * Shared visual style for a committed edit's on-screen text: the document's own injected
+ * font when we have it (else a correctly-sized bundled face), with detected colour /
+ * weight / slant / decoration. `fontPx` is already the calibrated size. Bold also gets a
+ * small `-webkit-text-stroke` so faux-bold runs (whose font has no real bold cut) still
+ * read as bold instead of staying thin.
  */
 function editTextStyle(edit: TextEdit, fontPx: number): CSSProperties {
   return {
@@ -395,7 +494,7 @@ function editTextStyle(edit: TextEdit, fontPx: number): CSSProperties {
     color: edit.textColor ?? "#000000",
     fontWeight: edit.bold ? 700 : undefined,
     fontStyle: edit.italic ? "italic" : undefined,
-    fontFamily: editFamily(!!edit.serif),
+    fontFamily: edit.fontFamily ? `${edit.fontFamily}, ${editFamily(!!edit.serif)}` : editFamily(!!edit.serif),
     textDecorationLine: decorationLine(edit),
     WebkitTextStroke: edit.bold ? `${Math.max(0.3, fontPx * 0.02)}px currentColor` : undefined,
   };

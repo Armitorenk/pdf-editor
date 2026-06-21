@@ -47,6 +47,9 @@ export interface TextEdit {
   /** CSS font-family of the original font once injected into the DOM via FontFace,
    *  so the on-screen preview matches the page (else falls back to serif/sans). */
   fontFamily?: string;
+  /** On-screen size correction for the injected font (the WebView renders the raw
+   *  program non-em-normalised); the preview draws at `fontSize × scale × sizeScale`. */
+  sizeScale?: number;
   /** Font ascent as a fraction of the em (from pdf.js), for baseline-correct overlay. */
   ascent?: number;
 }
