@@ -8,7 +8,7 @@
 //   2. the worker version can never drift from the installed `pdfjs-dist`.
 //
 // Runs automatically via the `predev` / `prebuild` npm hooks.
-import { copyFile, mkdir } from "node:fs/promises";
+import { copyFile, cp, mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,3 +19,12 @@ const dest = resolve(root, "public", "pdf.worker.min.mjs");
 await mkdir(dirname(dest), { recursive: true });
 await copyFile(src, dest);
 console.log(`[copy-pdf-worker] copied worker -> ${dest}`);
+
+// Also copy pdf.js's standard (base-14) font data. With `disableFontFace: true`
+// (needed so we can reuse a document's own embedded fonts) pdf.js renders
+// non-embedded base-14 fonts (Helvetica/Times/Courier/Symbol) from these files,
+// referenced via `standardFontDataUrl`. Without them such text renders blank.
+const fontsSrc = resolve(root, "node_modules", "pdfjs-dist", "standard_fonts");
+const fontsDest = resolve(root, "public", "standard_fonts");
+await cp(fontsSrc, fontsDest, { recursive: true });
+console.log(`[copy-pdf-worker] copied standard fonts -> ${fontsDest}`);

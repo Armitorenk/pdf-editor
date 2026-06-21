@@ -141,6 +141,13 @@ export function PdfEditor() {
     };
   }, [fileBytes]);
 
+  // Original (converted) font programs captured from edited runs, keyed by PostScript
+  // name, so export can reuse the document's own font where it covers the new text.
+  const originalFontsRef = useRef<Map<string, Uint8Array>>(new Map());
+  const registerFont = useCallback((psName: string, data: Uint8Array) => {
+    if (!originalFontsRef.current.has(psName)) originalFontsRef.current.set(psName, data);
+  }, []);
+
   // When a document loads: restore a reopened project's saved edits, or build the
   // default page order (originals, in order) for a fresh upload.
   useEffect(() => {
@@ -248,6 +255,7 @@ export function PdfEditor() {
     pastRef.current = [];
     futureRef.current = [];
     presentRef.current = null;
+    originalFontsRef.current = new Map(); // captured fonts belong to the old document
   }, []);
 
   const loadFile = useCallback(
@@ -619,6 +627,7 @@ export function PdfEditor() {
           textEdits: Object.values(textEdits),
           images: imageOverlays,
           annotations,
+          originalFonts: originalFontsRef.current,
         });
 
         if (format === "pdf") {
@@ -784,6 +793,7 @@ export function PdfEditor() {
               onCommitTextEdit={commitTextEdit}
               onRemoveTextEdit={removeTextEdit}
               fontStyleMap={fontStyleMap}
+              onRegisterFont={registerFont}
               images={imageOverlays}
               selectedImageId={selectedImageId}
               onSelectImage={setSelectedImageId}

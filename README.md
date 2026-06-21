@@ -137,12 +137,18 @@ the two coordinate systems never drift.
       back to the pixel stem-thickness heuristic vs. the page baseline.) On export the
       edit is drawn in the matching face — the four **Source Sans 3** styles
       (regular/bold/italic/bold-italic, a close match to the humanist sans many
-      documents use) plus a serif. Committed edits render in **every mode** from stored
-      PDF-space geometry (untouched pages cost nothing). Edits keyed `pageId:itemIndex`,
-      reset on file change. _Limit: the exact original typeface can't be reproduced —
-      PDFs embed only font **subsets** (verified: bare CFF/Type1, not reusable), so new
-      characters are drawn in the bundled close-match face (size/colour/weight/slant
-      matched)._
+      documents use) plus a serif. **Font reuse:** the export first tries the document's
+      OWN font — pdf.js (loaded with `fontExtraProperties` + `disableFontFace`, with
+      `standardFontDataUrl` so base-14 fonts still render) exposes each font's converted
+      OpenType program, which is re-embedded with pdf-lib for an **exact** match — but
+      only when fontkit confirms the (subset) font has a glyph for **every** character
+      typed; otherwise it falls back to the bundled close-match face. The strict gate is
+      essential: a subset that lacks a glyph would otherwise draw an invisible box.
+      Committed edits render in **every mode** from stored PDF-space geometry (untouched
+      pages cost nothing). Underline/strikethrough are detected and re-drawn too. Edits
+      keyed `pageId:itemIndex`, reset on file change. _Limit: when the original font's
+      subset lacks a typed character (e.g. a Turkish letter it never used), that run
+      falls back to the close-match face (size/colour/weight/slant matched)._
 - [x] **Step 3 — Image placement:** "Image" mode + "Add" uploads a PNG/JPG, placed
       centred on the active page. Drag to move, **four corner handles for free
       (non-aspect-locked) resize** — the opposite corner stays anchored, so a square

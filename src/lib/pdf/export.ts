@@ -6,6 +6,8 @@ export interface ExportPayload {
   textEdits: TextEdit[];
   images: ImageOverlay[];
   annotations: Annotation[];
+  /** Original (pdf.js-converted) font programs by PostScript name, for font reuse. */
+  originalFonts?: Map<string, Uint8Array>;
 }
 
 // Fallback size (A4 portrait, points) for a blank page with no recorded size.
@@ -23,7 +25,7 @@ const A4: [number, number] = [595.28, 841.89];
  */
 export async function exportPdf(
   originalBytes: Uint8Array,
-  { pageOrder, textEdits, images, annotations }: ExportPayload,
+  { pageOrder, textEdits, images, annotations, originalFonts }: ExportPayload,
 ): Promise<Uint8Array> {
   const [pdfLib, fontkitMod] = await Promise.all([
     import("pdf-lib"),
@@ -73,6 +75,36 @@ export async function exportPdf(
       : sansFont;
   }
 
+  // --- Font reuse -----------------------------------------------------------
+  // Prefer the document's OWN font for an edit, so the typeface matches exactly.
+  // The catch (proven): a PDF embeds only a font SUBSET, and pdf.js's converted
+  // program may lack a Unicode glyph for a newly-typed character (which would draw
+  // an invisible/.notdef box). So we gate strictly: reuse only when fontkit confirms
+  // the font has a glyph for EVERY character in the new text; otherwise fall back to
+  // the bundled close-match face. Embedded fonts are cached per PostScript name.
+  const fontkit = (fontkitMod.default ?? fontkitMod) as { create: (b: Uint8Array) => { hasGlyphForCodePoint: (cp: number) => boolean } };
+  const reuseCache = new Map<string, { pdfFont: PDFFont; fk: { hasGlyphForCodePoint: (cp: number) => boolean } } | null>();
+  const reuseFontFor = async (edit: TextEdit): Promise<PDFFont | null> => {
+    if (!edit.fontPsName || !originalFonts) return null;
+    const bytes = originalFonts.get(edit.fontPsName);
+    if (!bytes) return null;
+    let entry = reuseCache.get(edit.fontPsName);
+    if (entry === undefined) {
+      try {
+        entry = { fk: fontkit.create(bytes), pdfFont: await out.embedFont(bytes, { subset: true }) };
+      } catch {
+        entry = null;
+      }
+      reuseCache.set(edit.fontPsName, entry);
+    }
+    if (!entry) return null;
+    for (const ch of edit.newText) {
+      const cp = ch.codePointAt(0);
+      if (cp !== undefined && !entry.fk.hasGlyphForCodePoint(cp)) return null;
+    }
+    return entry.pdfFont;
+  };
+
   for (const ref of pageOrder) {
     let page: PDFPage;
     if (ref.kind === "original" && src) {
@@ -84,18 +116,22 @@ export async function exportPdf(
 
     if (sansFont) {
       for (const edit of textEdits.filter((t) => t.pageId === ref.id)) {
-        // Pick the closest face from the four sans styles. Serif has only a regular
-        // face embedded, so serif bold is faux-bolded (offset re-draw) below.
-        const font = edit.serif
-          ? serifFont!
-          : edit.bold && edit.italic
-            ? sansBoldItalicFont!
-            : edit.bold
-              ? sansBoldFont!
-              : edit.italic
-                ? sansItalicFont!
-                : sansFont;
-        const fauxBold = edit.bold && edit.serif;
+        // Reuse the original embedded font when it covers the text (exact match);
+        // otherwise pick the closest of the four bundled sans styles (serif gets the
+        // serif face, with faux-bold for serif bold).
+        const reuse = await reuseFontFor(edit);
+        const font =
+          reuse ??
+          (edit.serif
+            ? serifFont!
+            : edit.bold && edit.italic
+              ? sansBoldItalicFont!
+              : edit.bold
+                ? sansBoldFont!
+                : edit.italic
+                  ? sansItalicFont!
+                  : sansFont);
+        const fauxBold = !reuse && edit.bold && edit.serif;
         try {
           const newWidth = font.widthOfTextAtSize(edit.newText, edit.fontSize);
           page.drawRectangle({

@@ -20,6 +20,9 @@ interface DetectedText {
   serif: boolean;
   bold: boolean;
   italic: boolean;
+  /** pdf.js internal font id + resolved PostScript name (for font reuse on export). */
+  fontName?: string;
+  psName?: string;
 }
 
 // Cap the off-screen sampling bitmap so colour detection stays cheap on big pages.
@@ -41,6 +44,8 @@ interface TextLayerProps {
   onRemove: (key: string) => void;
   /** Document-wide font metadata (FontDescriptor → bold/italic/serif), or null. */
   fontStyleMap: Map<string, FontStyleInfo> | null;
+  /** Register a run's original font program (converted OpenType) for reuse on export. */
+  onRegisterFont: (psName: string, data: Uint8Array) => void;
 }
 
 /**
@@ -66,6 +71,7 @@ export function TextLayer({
   onCommit,
   onRemove,
   fontStyleMap,
+  onRegisterFont,
 }: TextLayerProps) {
   const pageRef = useRef<PDFPageProxy | null>(null);
   // Off-screen render of the page, used to sample real bg/text colours on commit.
@@ -132,7 +138,7 @@ export function TextLayer({
       // Resolve each font's base style from the PDF's metadata (cached per font).
       // pdf.js `commonObjs` (populated by the render above) gives the real PostScript
       // name + serif flag; the document-wide map gives bold/italic/serif.
-      const cache = new Map<string, { bold: boolean; italic: boolean; serif: boolean; hasMeta: boolean }>();
+      const cache = new Map<string, { bold: boolean; italic: boolean; serif: boolean; hasMeta: boolean; psName: string | null }>();
       const baseStyle = (fontName: string | undefined) => {
         const key = fontName ?? "";
         const hit = cache.get(key);
@@ -156,6 +162,7 @@ export function TextLayer({
           italic: meta?.italic ?? false,
           serif: meta?.serif ?? serifFlag ?? familySerif,
           hasMeta: !!meta,
+          psName,
         };
         cache.set(key, out);
         return out;
@@ -175,7 +182,17 @@ export function TextLayer({
         }
         // Italic: metadata, or a sheared text matrix (faux italic in the content stream).
         const italic = b.italic || runIsSkewed(r.transform);
-        return { itemIndex: r.idx, str: r.str, transform: r.transform, width: r.width, serif: b.serif, bold, italic };
+        return {
+          itemIndex: r.idx,
+          str: r.str,
+          transform: r.transform,
+          width: r.width,
+          serif: b.serif,
+          bold,
+          italic,
+          fontName: r.fontName,
+          psName: b.psName ?? undefined,
+        };
       });
       if (!cancelled) setItems(detected);
     })();
@@ -254,6 +271,17 @@ export function TextLayer({
           const runBox = { x: item.transform[4], y: item.transform[5], width: item.width, fontSize: pdfFontSize };
           const colors = sample ? sampleRunColors(sample, runBox) : undefined;
           const deco = sample ? detectDecorations(sample, runBox) : undefined;
+          // Capture the run's original (converted) font program so export can reuse it.
+          if (item.psName && item.fontName && pageRef.current) {
+            try {
+              const fo = pageRef.current.commonObjs.has(item.fontName)
+                ? pageRef.current.commonObjs.get(item.fontName)
+                : null;
+              if (fo?.data) onRegisterFont(item.psName, fo.data as Uint8Array);
+            } catch {
+              /* font program unavailable — export falls back to the bundled face */
+            }
+          }
           onCommit({
             pageId,
             itemIndex: item.itemIndex,
@@ -270,6 +298,7 @@ export function TextLayer({
             italic: item.italic,
             underline: deco?.underline,
             strike: deco?.strike,
+            fontPsName: item.psName,
           });
         };
 

@@ -38,7 +38,18 @@ export function usePdfDocument(bytes: Uint8Array | null): PdfDocumentState {
     (async () => {
       try {
         const pdfjs = await getPdfjs();
-        loadingTask = pdfjs.getDocument({ data: bytes.slice() });
+        // `fontExtraProperties` retains each loaded font's converted program bytes
+        // (`fontObj.data`) so text edits can re-embed and reuse the document's own
+        // font. `disableFontFace` keeps that data intact (it isn't consumed by a
+        // system FontFace) and renders glyphs directly — fine for canvas output.
+        loadingTask = pdfjs.getDocument({
+          data: bytes.slice(),
+          fontExtraProperties: true,
+          disableFontFace: true,
+          // base-14 font data for `disableFontFace` (copied to /public by the
+          // copy-pdf-worker script); the trailing slash is required by pdf.js.
+          standardFontDataUrl: "/standard_fonts/",
+        });
         const doc = await loadingTask.promise;
         if (cancelled) return;
         setState({ doc, numPages: doc.numPages, status: "ready", error: null });

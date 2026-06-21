@@ -36,6 +36,7 @@ interface PdfViewerProps {
   onCommitTextEdit: (edit: TextEdit) => void;
   onRemoveTextEdit: (key: string) => void;
   fontStyleMap: Map<string, FontStyleInfo> | null;
+  onRegisterFont: (psName: string, data: Uint8Array) => void;
 
   images: ImageOverlay[];
   selectedImageId: string | null;
@@ -273,6 +274,7 @@ export function PdfViewer(props: PdfViewerProps) {
                   onCommit={props.onCommitTextEdit}
                   onRemove={props.onRemoveTextEdit}
                   fontStyleMap={props.fontStyleMap}
+                  onRegisterFont={props.onRegisterFont}
                 />
               )}
 

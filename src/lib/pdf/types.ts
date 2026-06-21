@@ -41,6 +41,9 @@ export interface TextEdit {
   italic?: boolean; // original run is italic/oblique (metadata or skewed matrix)
   underline?: boolean; // original run was underlined (vector line below the baseline)
   strike?: boolean; // original run had a strikethrough line
+  /** PostScript name of the run's original font — used to reuse the embedded font on
+   *  export when it covers the new text (see the font-reuse path in export.ts). */
+  fontPsName?: string;
 }
 
 /** Stable map key for a text edit. */
