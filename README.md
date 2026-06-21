@@ -123,14 +123,17 @@ the two coordinate systems never drift.
       detected text runs (`getTextContent`); click a run to edit inline (Enter saves,
       Esc cancels). On commit the page is sampled off-screen (`src/lib/pdf/sampleColor.ts`)
       to capture the **real background colour behind the run** (so a blue panel stays
-      blue instead of a white box) and the **original ink colour** — both stored on the
-      edit and used in the WYSIWYG preview and the export. Serif vs. sans is detected
-      from the run's font family and the export embeds **two Unicode faces** (Noto Sans
-      + a serif), so a serif run stays serif. Committed edits render in **every mode**
-      from stored PDF-space geometry (untouched pages cost nothing). Edits keyed
-      `pageId:itemIndex`, reset on file change. _Limits: edits one detected run
-      (≈word/line fragment) at a time; matches family class + size + colour, not the
-      exact original typeface; bold/italic not reproduced._
+      blue instead of a white box) and the **original ink colour**. The ink colour is
+      taken from the glyph *cores* — the pixels furthest from the background — not an
+      average, which would be dragged toward the background by anti-aliased edges and
+      come out washed-out grey. **Boldness is detected** too, from stroke thickness
+      (median ink run-length ÷ font size), and re-applied: in the preview via
+      `font-weight`, and on export via a faux-bold offset double-draw. Serif vs. sans is
+      detected from the run's font family and the export embeds **two Unicode faces**
+      (Noto Sans + a serif). Committed edits render in **every mode** from stored
+      PDF-space geometry (untouched pages cost nothing). Edits keyed `pageId:itemIndex`,
+      reset on file change. _Limits: one detected run (≈word/line fragment) at a time;
+      matches family class + size + colour + weight, not the exact original typeface._
 - [x] **Step 3 — Image placement:** "Image" mode + "Add" uploads a PNG/JPG, placed
       centred on the active page. Drag to move, **four corner handles for free
       (non-aspect-locked) resize** — the opposite corner stays anchored, so a square
@@ -188,9 +191,14 @@ the two coordinate systems never drift.
       buttons and **Ctrl/Cmd+Z / Ctrl+Shift+Z (or Ctrl+Y)** replay snapshots. Object
       URLs are kept alive until document switch so an undone image delete still renders.
       A fresh document starts a new baseline (`epoch`).
-- [x] **Step 12 — Brand, app icon & splash:** one SVG logo mark (dog-eared page +
-      editing pencil) drives every asset via `scripts/gen-assets.mjs` (sharp) →
-      `@capacitor/assets generate`, producing all Android launcher densities (adaptive
-      icon: amber pencil on blue) and a launch **splash** (logo + "PDF Editor", with a
-      dark-mode variant). The splash shows on cold start via the `Theme.SplashScreen`
-      launch theme and clears once the WebView paints — no web changes.
+- [x] **Step 12 — Brand, app icon & splash:** one logo design (a red PDF "page":
+      folded corner, bold white "PDF", white edit-pencil) drives every asset via
+      `scripts/gen-assets.mjs` (sharp) → `@capacitor/assets generate`, producing all
+      Android launcher densities (full-bleed legacy icon + centred adaptive icon) and a
+      launch **splash** (logo + "PDF Editor", with a dark-mode variant). The splash
+      shows on cold start via the `Theme.SplashScreen` launch theme and clears once the
+      WebView paints — no web changes.
+- [x] **Step 13 — Android hardware back button:** `@capacitor/app`'s `backButton`
+      listener (registered in `PdfEditor`, native-only) steps *out* of the current
+      context instead of backgrounding the app: pages drawer open → close it; a document
+      open → back to the library; already at the library → `App.exitApp()`.

@@ -139,6 +139,7 @@ export function TextLayer({
                 fontSize: fontPx,
                 backgroundColor: edit.bgColor ?? "#ffffff",
                 color: edit.textColor ?? "#000000",
+                fontWeight: edit.bold ? 700 : undefined,
               }}
               className={cn(
                 "absolute box-content whitespace-nowrap px-0.5 leading-none",
@@ -201,6 +202,7 @@ export function TextLayer({
             bgColor: colors?.bg,
             textColor: colors?.text,
             serif: item.serif,
+            bold: colors?.bold,
           });
         };
 
@@ -239,6 +241,7 @@ export function TextLayer({
               fontSize: fontPx,
               backgroundColor: edit ? edit.bgColor ?? "#ffffff" : undefined,
               color: edit ? edit.textColor ?? "#000000" : undefined,
+              fontWeight: edit?.bold ? 700 : undefined,
             }}
             className={cn(
               "absolute z-10 box-content cursor-text overflow-hidden whitespace-nowrap text-left leading-none",

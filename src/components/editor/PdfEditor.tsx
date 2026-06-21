@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ImagePlus, Loader2, Maximize, ZoomIn, ZoomOut } from "lucide-react";
+import { Capacitor } from "@capacitor/core";
 import { usePdfDocument } from "@/hooks/usePdfDocument";
 import { cn } from "@/lib/utils";
 import { saveFile } from "@/lib/save";
@@ -274,6 +275,32 @@ export function PdfEditor() {
     },
     [refreshProjects],
   );
+
+  // Android hardware back button: step out of the current context instead of letting
+  // the WebView send the whole app to the background. Drawer open -> close it; a
+  // document open -> back to the library; already at the library -> exit the app.
+  const backStateRef = useRef({ pagesOpen: false, hasProject: false });
+  useEffect(() => {
+    backStateRef.current = { pagesOpen, hasProject: fileBytes != null };
+  }, [pagesOpen, fileBytes]);
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    let handle: { remove: () => void } | undefined;
+    void (async () => {
+      const { App } = await import("@capacitor/app");
+      handle = await App.addListener("backButton", () => {
+        const s = backStateRef.current;
+        if (s.pagesOpen) {
+          setPagesOpen(false);
+        } else if (s.hasProject) {
+          closeProject();
+        } else {
+          void App.exitApp();
+        }
+      });
+    })();
+    return () => handle?.remove();
+  }, [closeProject]);
 
   /** Switch tools; object selections only matter within their own mode. */
   const setMode = useCallback((mode: EditMode) => {

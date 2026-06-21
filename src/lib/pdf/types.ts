@@ -37,6 +37,7 @@ export interface TextEdit {
   bgColor?: string; // "#rrggbb" sampled behind the run; covers the old glyphs
   textColor?: string; // "#rrggbb" sampled from the original glyphs
   serif?: boolean; // original run used a serif family -> export with a serif font
+  bold?: boolean; // original run looked bold (thick stems) -> render/export bold
 }
 
 /** Stable map key for a text edit. */

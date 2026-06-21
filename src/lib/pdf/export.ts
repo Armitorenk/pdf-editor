@@ -79,13 +79,24 @@ export async function exportPdf(
             height: edit.fontSize * 1.2,
             color: hexToRgb(edit.bgColor ?? "#ffffff", rgb),
           });
-          page.drawText(edit.newText, {
-            x: edit.x,
-            y: edit.y,
-            size: edit.fontSize,
-            font,
-            color: hexToRgb(edit.textColor ?? "#000000", rgb),
-          });
+          const color = hexToRgb(edit.textColor ?? "#000000", rgb);
+          const drawAt = (dx: number, dy: number) =>
+            page.drawText(edit.newText, {
+              x: edit.x + dx,
+              y: edit.y + dy,
+              size: edit.fontSize,
+              font,
+              color,
+            });
+          drawAt(0, 0);
+          if (edit.bold) {
+            // No bold font embedded — fake weight by re-drawing with tiny offsets
+            // so the strokes thicken (a long-standing PDF faux-bold trick).
+            const d = edit.fontSize * 0.03;
+            drawAt(d, 0);
+            drawAt(0, d);
+            drawAt(d, d);
+          }
         } catch {
           // Character not encodable by the fallback font — leave the original.
         }
