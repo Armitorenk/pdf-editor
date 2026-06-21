@@ -83,6 +83,16 @@ async function calibrateFonts(
     Promise.allSettled(families.map((f) => injectedFonts.get(f) ?? Promise.resolve())),
     new Promise((r) => setTimeout(r, 1500)),
   ]);
+  // CRITICAL timing fix: `document.fonts.check` can report a face "loaded" a frame or two
+  // before the WebView actually PAINTS it. Measuring in that window returns the fallback
+  // font's (small) width, which inflates `k` and explodes the text. Wait for fonts to be
+  // ready, then for two animation frames (a full paint cycle) so the injected faces are on
+  // screen before we measure.
+  await Promise.race([document.fonts.ready, new Promise((r) => setTimeout(r, 1500))]);
+  await Promise.race([
+    new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+    new Promise((r) => setTimeout(r, 300)), // fallback if rAF is throttled (background)
+  ]);
   // One off-screen probe span reused for every font (visibility:hidden keeps layout; it must
   // NOT be display:none, which would have no box to measure).
   const probe = document.createElement("span");
