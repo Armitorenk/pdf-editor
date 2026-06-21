@@ -9,6 +9,7 @@ import { saveFile } from "@/lib/save";
 import { exportPdf } from "@/lib/pdf/export";
 import { extractText, imagesToZip, pdfToImages, type ExportFormat } from "@/lib/pdf/convert";
 import { liftRegion, solidColorPng } from "@/lib/pdf/lift";
+import { buildFontStyleMap, type FontStyleInfo } from "@/lib/pdf/fontStyles";
 import {
   deleteProject,
   listProjects,
@@ -114,6 +115,31 @@ export function PdfEditor() {
   } | null>(null);
 
   const { doc, numPages, status, error } = usePdfDocument(fileBytes);
+
+  // Parse the document's font metadata once (FontDescriptor flags / italic angle /
+  // weight) so text edits can detect the original run's bold/italic/serif from the
+  // PDF itself rather than guessing from pixels. See src/lib/pdf/fontStyles.ts.
+  const [fontStyleMap, setFontStyleMap] = useState<Map<string, FontStyleInfo> | null>(null);
+  useEffect(() => {
+    if (!fileBytes) {
+      setFontStyleMap(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { PDFDocument } = await import("pdf-lib");
+        const d = await PDFDocument.load(fileBytes.slice(), { updateMetadata: false, ignoreEncryption: true });
+        const map = buildFontStyleMap(d);
+        if (!cancelled) setFontStyleMap(map);
+      } catch {
+        if (!cancelled) setFontStyleMap(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [fileBytes]);
 
   // When a document loads: restore a reopened project's saved edits, or build the
   // default page order (originals, in order) for a fresh upload.
@@ -756,6 +782,7 @@ export function PdfEditor() {
               textEdits={textEdits}
               onCommitTextEdit={commitTextEdit}
               onRemoveTextEdit={removeTextEdit}
+              fontStyleMap={fontStyleMap}
               images={imageOverlays}
               selectedImageId={selectedImageId}
               onSelectImage={setSelectedImageId}

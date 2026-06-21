@@ -68,6 +68,7 @@ src/
       pdfjs.ts                # browser-only lazy loader; wires the worker
       render.ts               # renderPageToCanvas() — DPR-aware, cancellable
       coordinates.ts          # *** DOM <-> PDF coordinate mapping (read this) ***
+      fontStyles.ts           # Style Detection Engine: FontDescriptor -> bold/italic/serif
       sampleColor.ts          # sample real bg/ink colour behind a text run (for blend-in edits)
       lift.ts                 # rasterise a page region to a movable PNG + cover colour
       export.ts               # rebuild PDF from pageOrder + bake every edit (pdf-lib)
@@ -126,20 +127,22 @@ the two coordinate systems never drift.
       blue instead of a white box) and the **original ink colour**. The ink colour is
       taken from the glyph *cores* — the pixels furthest from the background — not an
       average, which would be dragged toward the background by anti-aliased edges and
-      come out washed-out grey. **Boldness is detected** too, by comparing the run's
-      stroke thickness (median ink run-length ÷ font size) to the page's own body
-      baseline (the **low percentile** of its runs' stems — robust even when the page
-      is full of bold/monospace, which would inflate a median) — a heading measures
-      ~2× the body, so this cleanly tells a bold heading from regular text without an
-      unreliable absolute threshold. Bold is re-applied via a **real embedded bold
-      face** on export (and `font-weight` in the preview). Serif vs. sans is detected
-      from the run's font family; the export embeds **Source Sans 3 (regular + bold)** —
-      a close match to the humanist sans many documents use — plus a serif. Committed
-      edits render in **every mode** from stored PDF-space geometry (untouched pages
-      cost nothing). Edits keyed `pageId:itemIndex`, reset on file change. _Limit: the
-      exact original typeface can't be reproduced — PDFs embed only font **subsets**
-      (verified: bare CFF/Type1, not reusable), so new characters are drawn in the
-      bundled close-match face (matched for size, colour, and weight)._
+      come out washed-out grey. **Bold / italic / serif are read from the PDF's own
+      font metadata** — a Style Detection Engine (`src/lib/pdf/fontStyles.ts`) parses
+      every `FontDescriptor` (name, `Flags` Serif/Italic/ForceBold bits, `ItalicAngle`,
+      `StemV`, `FontWeight`) into a document-wide map; each run is matched by its real
+      PostScript name (from pdf.js `commonObjs`), so a bold heading and an italic word
+      are detected authoritatively rather than guessed. Faux styles are caught too:
+      faux-italic from a sheared text matrix. (For fonts with no descriptor, bold falls
+      back to the pixel stem-thickness heuristic vs. the page baseline.) On export the
+      edit is drawn in the matching face — the four **Source Sans 3** styles
+      (regular/bold/italic/bold-italic, a close match to the humanist sans many
+      documents use) plus a serif. Committed edits render in **every mode** from stored
+      PDF-space geometry (untouched pages cost nothing). Edits keyed `pageId:itemIndex`,
+      reset on file change. _Limit: the exact original typeface can't be reproduced —
+      PDFs embed only font **subsets** (verified: bare CFF/Type1, not reusable), so new
+      characters are drawn in the bundled close-match face (size/colour/weight/slant
+      matched)._
 - [x] **Step 3 — Image placement:** "Image" mode + "Add" uploads a PNG/JPG, placed
       centred on the active page. Drag to move, **four corner handles for free
       (non-aspect-locked) resize** — the opposite corner stays anchored, so a square

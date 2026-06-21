@@ -12,6 +12,7 @@ import type {
   PageSize,
   TextEdit,
 } from "@/lib/pdf/types";
+import type { FontStyleInfo } from "@/lib/pdf/fontStyles";
 import { PdfPageCanvas } from "./PdfPageCanvas";
 import { TextLayer } from "./TextLayer";
 import { ImageLayer } from "./ImageLayer";
@@ -32,6 +33,7 @@ interface PdfViewerProps {
   textEdits: Record<string, TextEdit>;
   onCommitTextEdit: (edit: TextEdit) => void;
   onRemoveTextEdit: (key: string) => void;
+  fontStyleMap: Map<string, FontStyleInfo> | null;
 
   images: ImageOverlay[];
   selectedImageId: string | null;
@@ -189,6 +191,7 @@ export function PdfViewer(props: PdfViewerProps) {
                   edits={props.textEdits}
                   onCommit={props.onCommitTextEdit}
                   onRemove={props.onRemoveTextEdit}
+                  fontStyleMap={props.fontStyleMap}
                 />
               )}
 

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 import { multiplyMatrix } from "@/lib/pdf/coordinates";
 import { sampleRunColors, runRelStem, isBold, percentile, type PageSample } from "@/lib/pdf/sampleColor";
+import { lookupFontStyle, runIsSkewed, type FontStyleInfo } from "@/lib/pdf/fontStyles";
 import { textEditKey, type TextEdit } from "@/lib/pdf/types";
 import { cn } from "@/lib/utils";
 
@@ -15,8 +16,10 @@ interface DetectedText {
   transform: number[];
   /** Run width in PDF points. */
   width: number;
-  /** Original family was a serif face -> export/preview with a serif font. */
+  /** Original style, detected from the PDF's font metadata (see fontStyles.ts). */
   serif: boolean;
+  bold: boolean;
+  italic: boolean;
 }
 
 // Cap the off-screen sampling bitmap so colour detection stays cheap on big pages.
@@ -36,6 +39,8 @@ interface TextLayerProps {
   edits: Record<string, TextEdit>;
   onCommit: (edit: TextEdit) => void;
   onRemove: (key: string) => void;
+  /** Document-wide font metadata (FontDescriptor → bold/italic/serif), or null. */
+  fontStyleMap: Map<string, FontStyleInfo> | null;
 }
 
 /**
@@ -60,6 +65,7 @@ export function TextLayer({
   edits,
   onCommit,
   onRemove,
+  fontStyleMap,
 }: TextLayerProps) {
   const pageRef = useRef<PDFPageProxy | null>(null);
   // Off-screen render of the page, used to sample real bg/text colours on commit.
@@ -79,23 +85,23 @@ export function TextLayer({
       const content = await page.getTextContent();
       if (cancelled) return;
       pageRef.current = page;
-      const detected: DetectedText[] = [];
-      content.items.forEach((item, idx) => {
-        if ("str" in item && item.str.trim().length > 0) {
-          const family = (item.fontName && content.styles[item.fontName]?.fontFamily) || "";
-          detected.push({
-            itemIndex: idx,
-            str: item.str,
-            transform: item.transform,
-            width: item.width,
-            serif: /serif/i.test(family) && !/sans/i.test(family),
-          });
-        }
-      });
-      setItems(detected);
 
-      // Rasterise the page once (capped) so commits can sample colours behind/under
-      // each run. Best-effort: if it fails, edits fall back to white/black.
+      // Raw runs first; styles are resolved below once fonts are loaded.
+      const raw = content.items
+        .map((item, idx) => ({ item, idx }))
+        .filter(({ item }) => "str" in item && item.str.trim().length > 0)
+        .map(({ item, idx }) => ({
+          idx,
+          str: (item as { str: string }).str,
+          transform: (item as { transform: number[] }).transform,
+          width: (item as { width: number }).width,
+          fontName: (item as { fontName?: string }).fontName,
+        }));
+
+      // Rasterise the page once (capped). Doubles as: colour sampling on commit, the
+      // pixel bold-fallback baseline, AND it loads fonts into `commonObjs` so we can
+      // read each run's real PostScript name. Best-effort.
+      let sample: PageSample | null = null;
       try {
         const base = page.getViewport({ scale: 1 });
         const s = Math.min(2, SAMPLE_MAX_SIDE / Math.max(base.width, base.height));
@@ -106,33 +112,77 @@ export function TextLayer({
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (ctx) {
           await page.render({ canvas, viewport: vp }).promise;
-          if (!cancelled) {
-            const sample: PageSample = {
-              data: ctx.getImageData(0, 0, canvas.width, canvas.height),
-              transform: vp.transform,
-            };
-            sampleRef.current = sample;
-            // Establish the page's "regular" stem baseline from its runs.
-            const stems: number[] = [];
-            for (const d of detected) {
-              const fs = Math.hypot(d.transform[2], d.transform[3]);
-              if (fs <= 0 || d.width <= 0) continue;
-              const rs = runRelStem(sample, { x: d.transform[4], y: d.transform[5], width: d.width, fontSize: fs });
-              if (rs != null) stems.push(rs);
-              if (stems.length >= 120) break;
-            }
-            // 30th percentile ≈ the regular-body stem (robust to bold/mono runs).
-            pageStemRef.current = percentile(stems, 0.3);
+          if (cancelled) return;
+          sample = { data: ctx.getImageData(0, 0, canvas.width, canvas.height), transform: vp.transform };
+          sampleRef.current = sample;
+          const stems: number[] = [];
+          for (const r of raw) {
+            const fs = Math.hypot(r.transform[2], r.transform[3]);
+            if (fs <= 0 || r.width <= 0) continue;
+            const rs = runRelStem(sample, { x: r.transform[4], y: r.transform[5], width: r.width, fontSize: fs });
+            if (rs != null) stems.push(rs);
+            if (stems.length >= 120) break;
           }
+          pageStemRef.current = percentile(stems, 0.3); // ≈ regular-body stem
         }
       } catch {
         sampleRef.current = null;
       }
+
+      // Resolve each font's base style from the PDF's metadata (cached per font).
+      // pdf.js `commonObjs` (populated by the render above) gives the real PostScript
+      // name + serif flag; the document-wide map gives bold/italic/serif.
+      const cache = new Map<string, { bold: boolean; italic: boolean; serif: boolean; hasMeta: boolean }>();
+      const baseStyle = (fontName: string | undefined) => {
+        const key = fontName ?? "";
+        const hit = cache.get(key);
+        if (hit) return hit;
+        let psName: string | null = null;
+        let serifFlag: boolean | null = null;
+        try {
+          const fo = fontName && page.commonObjs.has(fontName) ? page.commonObjs.get(fontName) : null;
+          if (fo) {
+            psName = (fo.name as string) ?? null;
+            if (typeof fo.isSerifFont === "boolean") serifFlag = fo.isSerifFont;
+          }
+        } catch {
+          /* font not resolved — fall through to family/heuristics */
+        }
+        const meta = lookupFontStyle(fontStyleMap, psName);
+        const family = (fontName && content.styles[fontName]?.fontFamily) || "";
+        const familySerif = /serif/i.test(family) && !/sans/i.test(family);
+        const out = {
+          bold: meta?.bold ?? false,
+          italic: meta?.italic ?? false,
+          serif: meta?.serif ?? serifFlag ?? familySerif,
+          hasMeta: !!meta,
+        };
+        cache.set(key, out);
+        return out;
+      };
+
+      const detected: DetectedText[] = raw.map((r) => {
+        const b = baseStyle(r.fontName);
+        // Bold: trust metadata; if the font has no descriptor, fall back to the pixel
+        // stem-thickness heuristic against the page baseline.
+        let bold = b.bold;
+        if (!b.hasMeta && sample) {
+          const fs = Math.hypot(r.transform[2], r.transform[3]);
+          bold = isBold(
+            runRelStem(sample, { x: r.transform[4], y: r.transform[5], width: r.width, fontSize: fs }),
+            pageStemRef.current,
+          );
+        }
+        // Italic: metadata, or a sheared text matrix (faux italic in the content stream).
+        const italic = b.italic || runIsSkewed(r.transform);
+        return { itemIndex: r.idx, str: r.str, transform: r.transform, width: r.width, serif: b.serif, bold, italic };
+      });
+      if (!cancelled) setItems(detected);
     })();
     return () => {
       cancelled = true;
     };
-  }, [doc, pageNumber, interactive]);
+  }, [doc, pageNumber, interactive, fontStyleMap]);
 
   // --- Read-only preview (any non-text mode): paint committed edits only. --------
   if (!interactive) {
@@ -155,6 +205,7 @@ export function TextLayer({
                 backgroundColor: edit.bgColor ?? "#ffffff",
                 color: edit.textColor ?? "#000000",
                 fontWeight: edit.bold ? 700 : undefined,
+                fontStyle: edit.italic ? "italic" : undefined,
               }}
               className={cn(
                 "absolute box-content whitespace-nowrap px-0.5 leading-none",
@@ -196,12 +247,11 @@ export function TextLayer({
             onRemove(key);
             return;
           }
-          // Sample the page so the edit blends in (real bg colour + ink colour) and
-          // matches weight (bold relative to this page's body baseline).
+          // Sample the page so the edit blends in (real bg colour + ink colour). Style
+          // (bold/italic/serif) was already resolved from the font metadata.
           const sample = sampleRef.current;
           const runBox = { x: item.transform[4], y: item.transform[5], width: item.width, fontSize: pdfFontSize };
           const colors = sample ? sampleRunColors(sample, runBox) : undefined;
-          const bold = sample ? isBold(runRelStem(sample, runBox), pageStemRef.current) : false;
           onCommit({
             pageId,
             itemIndex: item.itemIndex,
@@ -214,7 +264,8 @@ export function TextLayer({
             bgColor: colors?.bg,
             textColor: colors?.text,
             serif: item.serif,
-            bold,
+            bold: item.bold,
+            italic: item.italic,
           });
         };
 
@@ -254,6 +305,7 @@ export function TextLayer({
               backgroundColor: edit ? edit.bgColor ?? "#ffffff" : undefined,
               color: edit ? edit.textColor ?? "#000000" : undefined,
               fontWeight: edit?.bold ? 700 : undefined,
+              fontStyle: edit?.italic ? "italic" : undefined,
             }}
             className={cn(
               "absolute z-10 box-content cursor-text overflow-hidden whitespace-nowrap text-left leading-none",

@@ -35,36 +35,42 @@ export async function exportPdf(
   const needsOriginal = pageOrder.some((p) => p.kind === "original");
   const src = needsOriginal ? await PDFDocument.load(originalBytes.slice()) : null;
 
-  // Embedded Unicode faces: sans regular + sans bold (Source Sans 3, a close match
-  // to the humanist sans used by many documents) and a serif. Each falls back to a
-  // standard font if its TTF can't be fetched/embedded.
+  // Embedded Unicode faces: the four Source Sans 3 styles (regular/bold/italic/bold-
+  // italic — a close match to the humanist sans many documents use) plus a serif.
+  // Each variant is only embedded if some edit needs it, and falls back to a lighter
+  // face (ultimately Helvetica) if its TTF can't be fetched.
   let sansFont: PDFFont | null = null;
   let sansBoldFont: PDFFont | null = null;
+  let sansItalicFont: PDFFont | null = null;
+  let sansBoldItalicFont: PDFFont | null = null;
   let serifFont: PDFFont | null = null;
   if (textEdits.length > 0) {
     out.registerFontkit(fontkitMod.default ?? fontkitMod);
-    const embed = async (url: string) => {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`font fetch failed: ${res.status}`);
-      return out.embedFont(await res.arrayBuffer(), { subset: true });
+    const embedOr = async (url: string, fallback: () => Promise<PDFFont> | PDFFont) => {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`font fetch failed: ${res.status}`);
+        return await out.embedFont(await res.arrayBuffer(), { subset: true });
+      } catch {
+        return fallback();
+      }
     };
-    try {
-      sansFont = await embed("/fonts/editor-sans.ttf");
-    } catch {
-      sansFont = await out.embedFont(StandardFonts.Helvetica);
-    }
-    try {
-      sansBoldFont = textEdits.some((t) => t.bold && !t.serif)
-        ? await embed("/fonts/editor-sans-bold.ttf")
-        : sansFont;
-    } catch {
-      sansBoldFont = await out.embedFont(StandardFonts.HelveticaBold);
-    }
-    try {
-      serifFont = textEdits.some((t) => t.serif) ? await embed("/fonts/editor-serif.ttf") : sansFont;
-    } catch {
-      serifFont = await out.embedFont(StandardFonts.TimesRoman);
-    }
+    const need = (pred: (t: TextEdit) => boolean) => textEdits.some(pred);
+    const sansOf = (t: TextEdit) => !t.serif;
+
+    sansFont = await embedOr("/fonts/editor-sans.ttf", () => out.embedFont(StandardFonts.Helvetica));
+    sansBoldFont = need((t) => sansOf(t) && !!t.bold && !t.italic)
+      ? await embedOr("/fonts/editor-sans-bold.ttf", () => sansFont!)
+      : sansFont;
+    sansItalicFont = need((t) => sansOf(t) && !!t.italic && !t.bold)
+      ? await embedOr("/fonts/editor-sans-italic.ttf", () => sansFont!)
+      : sansFont;
+    sansBoldItalicFont = need((t) => sansOf(t) && !!t.bold && !!t.italic)
+      ? await embedOr("/fonts/editor-sans-bolditalic.ttf", () => sansBoldFont!)
+      : sansBoldFont;
+    serifFont = need((t) => !!t.serif)
+      ? await embedOr("/fonts/editor-serif.ttf", () => sansFont!)
+      : sansFont;
   }
 
   for (const ref of pageOrder) {
@@ -76,11 +82,19 @@ export async function exportPdf(
       page = out.addPage(ref.kind === "blank" ? [ref.width, ref.height] : A4);
     }
 
-    if (sansFont && sansBoldFont && serifFont) {
+    if (sansFont) {
       for (const edit of textEdits.filter((t) => t.pageId === ref.id)) {
-        // Pick the closest face. Sans bold uses a real bold font; serif bold has no
-        // embedded bold face, so it's faux-bolded (offset re-draw) below.
-        const font = edit.serif ? serifFont : edit.bold ? sansBoldFont : sansFont;
+        // Pick the closest face from the four sans styles. Serif has only a regular
+        // face embedded, so serif bold is faux-bolded (offset re-draw) below.
+        const font = edit.serif
+          ? serifFont!
+          : edit.bold && edit.italic
+            ? sansBoldItalicFont!
+            : edit.bold
+              ? sansBoldFont!
+              : edit.italic
+                ? sansItalicFont!
+                : sansFont;
         const fauxBold = edit.bold && edit.serif;
         try {
           const newWidth = font.widthOfTextAtSize(edit.newText, edit.fontSize);
