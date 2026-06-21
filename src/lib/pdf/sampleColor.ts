@@ -106,6 +106,40 @@ export function sampleRunColors(sample: PageSample, run: RunBox): RunColors {
   return { bg: toHex(bg), text: toHex(text) };
 }
 
+export interface Decorations {
+  underline: boolean;
+  strike: boolean;
+}
+
+/**
+ * Detect underline / strikethrough by looking for a near-continuous horizontal ink
+ * line across the run. Below the baseline glyphs barely reach, so a filled line there
+ * is an underline; across the x-height mid-line a *near-continuous* line (ink even in
+ * the gaps between letters) is a strikethrough. Reuses the page bitmap, so no separate
+ * vector-path parse is needed.
+ */
+export function detectDecorations(sample: PageSample, run: RunBox): Decorations {
+  const { data, transform } = sample;
+  const bg = localBg(data, transform, run);
+  const inkFraction = (dyFrac: number): number => {
+    let ink = 0;
+    let total = 0;
+    for (let t = 0.02; t <= 0.98; t += 0.02) {
+      const p = pixelAt(data, ...toPixel(transform, run.x + t * run.width, run.y + dyFrac * run.fontSize));
+      if (!p) continue;
+      total++;
+      if (dist2(p, bg) > INK_THRESHOLD2) ink++;
+    }
+    return total ? ink / total : 0;
+  };
+  // Below the baseline (negative = lower on the page): an underline fills it; plain
+  // text only has the odd descender, so a high fraction is a reliable signal.
+  const underline = Math.max(inkFraction(-0.08), inkFraction(-0.13), inkFraction(-0.18)) > 0.6;
+  // Across the x-height: a strikethrough is near-total coverage (fills letter gaps).
+  const strike = Math.max(inkFraction(0.28), inkFraction(0.34), inkFraction(0.4)) > 0.82;
+  return { underline, strike };
+}
+
 /**
  * Relative stroke thickness of a run: the median ink run-length along scanlines
  * across the x-height band, divided by the font size (scale-independent). Used for

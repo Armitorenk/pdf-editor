@@ -121,6 +121,20 @@ export async function exportPdf(
             drawAt(0, d);
             drawAt(d, d);
           }
+          // Redraw underline / strikethrough across the new text (the white cover
+          // erased the original vector line), so the decoration survives the edit.
+          if (edit.underline || edit.strike) {
+            const lineW = Math.max(edit.width, newWidth);
+            const thickness = Math.max(0.6, edit.fontSize * 0.05);
+            if (edit.underline) {
+              const y = edit.y - edit.fontSize * 0.1;
+              page.drawLine({ start: { x: edit.x, y }, end: { x: edit.x + lineW, y }, thickness, color });
+            }
+            if (edit.strike) {
+              const y = edit.y + edit.fontSize * 0.28;
+              page.drawLine({ start: { x: edit.x, y }, end: { x: edit.x + lineW, y }, thickness, color });
+            }
+          }
         } catch {
           // Character not encodable by the fallback font — leave the original.
         }

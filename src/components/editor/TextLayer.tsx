@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 import { multiplyMatrix } from "@/lib/pdf/coordinates";
-import { sampleRunColors, runRelStem, isBold, percentile, type PageSample } from "@/lib/pdf/sampleColor";
+import { sampleRunColors, runRelStem, isBold, percentile, detectDecorations, type PageSample } from "@/lib/pdf/sampleColor";
 import { lookupFontStyle, runIsSkewed, type FontStyleInfo } from "@/lib/pdf/fontStyles";
 import { textEditKey, type TextEdit } from "@/lib/pdf/types";
 import { cn } from "@/lib/utils";
@@ -206,6 +206,7 @@ export function TextLayer({
                 color: edit.textColor ?? "#000000",
                 fontWeight: edit.bold ? 700 : undefined,
                 fontStyle: edit.italic ? "italic" : undefined,
+                textDecorationLine: decorationLine(edit),
               }}
               className={cn(
                 "absolute box-content whitespace-nowrap px-0.5 leading-none",
@@ -252,6 +253,7 @@ export function TextLayer({
           const sample = sampleRef.current;
           const runBox = { x: item.transform[4], y: item.transform[5], width: item.width, fontSize: pdfFontSize };
           const colors = sample ? sampleRunColors(sample, runBox) : undefined;
+          const deco = sample ? detectDecorations(sample, runBox) : undefined;
           onCommit({
             pageId,
             itemIndex: item.itemIndex,
@@ -266,6 +268,8 @@ export function TextLayer({
             serif: item.serif,
             bold: item.bold,
             italic: item.italic,
+            underline: deco?.underline,
+            strike: deco?.strike,
           });
         };
 
@@ -306,6 +310,7 @@ export function TextLayer({
               color: edit ? edit.textColor ?? "#000000" : undefined,
               fontWeight: edit?.bold ? 700 : undefined,
               fontStyle: edit?.italic ? "italic" : undefined,
+              textDecorationLine: edit ? decorationLine(edit) : undefined,
             }}
             className={cn(
               "absolute z-10 box-content cursor-text overflow-hidden whitespace-nowrap text-left leading-none",
@@ -321,4 +326,10 @@ export function TextLayer({
       })}
     </div>
   );
+}
+
+/** CSS `text-decoration-line` for an edit's underline/strikethrough, or undefined. */
+function decorationLine(edit: TextEdit): string | undefined {
+  const parts = [edit.underline ? "underline" : "", edit.strike ? "line-through" : ""].filter(Boolean);
+  return parts.length ? parts.join(" ") : undefined;
 }

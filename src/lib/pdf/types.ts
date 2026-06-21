@@ -39,6 +39,8 @@ export interface TextEdit {
   serif?: boolean; // original run used a serif family -> export with a serif font
   bold?: boolean; // original run is bold (from font metadata) -> render/export bold
   italic?: boolean; // original run is italic/oblique (metadata or skewed matrix)
+  underline?: boolean; // original run was underlined (vector line below the baseline)
+  strike?: boolean; // original run had a strikethrough line
 }
 
 /** Stable map key for a text edit. */
