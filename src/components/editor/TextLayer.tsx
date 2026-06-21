@@ -60,16 +60,32 @@ function ensureFontFace(psName: string, data: Uint8Array): string {
   return family;
 }
 
+// A single persistent off-screen probe for live text measurement (visibility:hidden keeps
+// layout — display:none would have no box). Reused for calibration AND letter-spacing fit.
+let probeEl: HTMLSpanElement | null = null;
+function measureTextPx(cssFamily: string, text: string, sizePx: number): number {
+  if (typeof document === "undefined") return 0;
+  if (!probeEl) {
+    probeEl = document.createElement("span");
+    probeEl.style.cssText =
+      "position:absolute;left:-9999px;top:-9999px;visibility:hidden;white-space:nowrap;padding:0;margin:0;border:0;line-height:1;";
+    document.body.appendChild(probeEl);
+  }
+  probeEl.style.fontFamily = cssFamily;
+  probeEl.style.fontSize = `${sizePx}px`;
+  probeEl.textContent = text;
+  return probeEl.getBoundingClientRect().width;
+}
+
 /**
- * Per-font on-screen size correction. The Android WebView renders the raw pdf.js-
- * converted program non-em-normalised, so at a given CSS `font-size` its glyphs come out
- * 2–3× too big. We measure the injected face's REAL advance for an actual run and compare
- * it to pdf.js's known advance, yielding a scale `k = expected / measured`; rendering the
- * text at `fontSize * k` cancels the distortion. Same idea as export.ts's width
- * calibration, but measured live in the DOM. We measure with a REAL hidden <span> +
- * getBoundingClientRect (NOT canvas `measureText`, which mis-sizes freshly FontFace-
- * injected broken-metric fonts in the Android WebView) so `k` reflects the exact pixels
- * the engine paints. Fonts that don't load / measure sanely are left out → bundled at 1×.
+ * Per-font on-screen size correction `k`. The Android WebView renders the raw pdf.js-
+ * converted program non-em-normalised, so at a given CSS font-size its glyphs come out
+ * 2–3× too big. For each run we measure the injected face's REAL advance (hidden <span> +
+ * getBoundingClientRect — NOT canvas measureText, which mis-sizes freshly-injected fonts)
+ * and compare to pdf.js's advance → a per-run ratio. We keep the MEDIAN across the font's
+ * runs so a single run with custom PDF tracking (Tc/Tz) can't skew k and vertically squish
+ * the text — k stays uniform, height is exactly fontPx × k, and horizontal fit is handled
+ * separately by letter-spacing. Fonts that don't load are left out → bundled face at 1×.
  */
 async function calibrateFonts(
   raw: { str: string; transform: number[]; width: number; fontName?: string }[],
@@ -77,52 +93,42 @@ async function calibrateFonts(
 ): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   if (typeof document === "undefined" || !document.fonts) return out;
-  // Wait (bounded) for the injected faces so the probe renders them, not a fallback.
   const families = [...new Set(Array.from(cache.values()).map((c) => c.fontFamily).filter((f): f is string => !!f))];
   await Promise.race([
     Promise.allSettled(families.map((f) => injectedFonts.get(f) ?? Promise.resolve())),
     new Promise((r) => setTimeout(r, 1500)),
   ]);
-  // CRITICAL timing fix: `document.fonts.check` can report a face "loaded" a frame or two
-  // before the WebView actually PAINTS it. Measuring in that window returns the fallback
-  // font's (small) width, which inflates `k` and explodes the text. Wait for fonts to be
-  // ready, then for two animation frames (a full paint cycle) so the injected faces are on
-  // screen before we measure.
+  // Timing fix: document.fonts.check can report a face "loaded" a frame or two before the
+  // WebView PAINTS it; measuring then returns the fallback width and inflates k. Wait for
+  // fonts.ready + two animation frames (a full paint), each bounded by a timeout.
   await Promise.race([document.fonts.ready, new Promise((r) => setTimeout(r, 1500))]);
   await Promise.race([
     new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
-    new Promise((r) => setTimeout(r, 300)), // fallback if rAF is throttled (background)
+    new Promise((r) => setTimeout(r, 300)),
   ]);
-  // One off-screen probe span reused for every font (visibility:hidden keeps layout; it must
-  // NOT be display:none, which would have no box to measure).
-  const probe = document.createElement("span");
-  probe.style.cssText =
-    "position:absolute;left:-9999px;top:-9999px;visibility:hidden;white-space:nowrap;padding:0;margin:0;border:0;line-height:1;";
-  document.body.appendChild(probe);
   const M = 256; // large measuring size → a stable ratio
-  const seen = new Set<string>();
-  try {
-    for (const r of raw) {
-      const key = r.fontName ?? "";
-      if (seen.has(key)) continue;
-      const family = cache.get(key)?.fontFamily;
-      if (!family) continue;
-      const fs = Math.hypot(r.transform[2], r.transform[3]);
-      if (fs <= 0 || r.width <= 0 || r.str.trim().length === 0) continue;
-      seen.add(key);
-      if (!document.fonts.check(`${M}px "${family}"`)) continue; // face unavailable → bundled
-      probe.style.fontFamily = `"${family}"`;
-      probe.style.fontSize = `${M}px`;
-      probe.textContent = r.str;
-      const measured = probe.getBoundingClientRect().width; // px the engine actually paints
-      const expected = r.width * (M / fs); // px it SHOULD span (pdf.js advance, scaled to M)
-      if (measured > 1 && expected > 1) {
-        const k = expected / measured;
-        if (k > 0.2 && k < 5) out.set(key, k);
+  const samples = new Map<string, number[]>();
+  for (const r of raw) {
+    const key = r.fontName ?? "";
+    const family = cache.get(key)?.fontFamily;
+    if (!family || (samples.get(key)?.length ?? 0) >= 8) continue;
+    const fs = Math.hypot(r.transform[2], r.transform[3]);
+    if (fs <= 0 || r.width <= 0 || r.str.trim().length === 0) continue;
+    if (!document.fonts.check(`${M}px "${family}"`)) continue; // face unavailable → bundled
+    const measured = measureTextPx(`"${family}"`, r.str, M); // px the engine actually paints
+    const expected = r.width * (M / fs); // px it SHOULD span (pdf.js advance, scaled to M)
+    if (measured > 1 && expected > 1) {
+      const k = expected / measured;
+      if (k > 0.2 && k < 5) {
+        const arr = samples.get(key) ?? [];
+        arr.push(k);
+        samples.set(key, arr);
       }
     }
-  } finally {
-    probe.remove();
+  }
+  for (const [key, arr] of samples) {
+    const med = arr.length ? percentile(arr, 0.5) : null;
+    if (med != null) out.set(key, med);
   }
   return out;
 }
@@ -356,6 +362,7 @@ export function TextLayer({
                   top: 0,
                   ...glyphStyle(edit, fontPx),
                   ...scaleStyle(edit.sizeScale ?? 1, ascent * fontPx),
+                  letterSpacing: `${trackingPx(edit, scale, edit.sizeScale ?? 1)}px`,
                 }}
               >
                 {edit.newText}
@@ -421,6 +428,11 @@ export function TextLayer({
               /* font program unavailable — export falls back to the bundled face */
             }
           }
+          // Natural advance of the new text at the CORRECTED size, in PDF points. The probe
+          // renders the injected font oversized by 1/k, so multiply the measured px back by k.
+          const fam = item.fontFamily ? `"${item.fontFamily}"` : editFamily(item.serif);
+          const wPx = measureTextPx(fam, value, 256);
+          const naturalWidth = wPx > 0 ? (wPx * item.sizeScale * pdfFontSize) / 256 : undefined;
           onCommit({
             pageId,
             itemIndex: item.itemIndex,
@@ -441,6 +453,7 @@ export function TextLayer({
             ascent: item.ascent,
             fontFamily: item.fontFamily,
             sizeScale: item.sizeScale,
+            naturalWidth,
           });
         };
 
@@ -497,6 +510,7 @@ export function TextLayer({
                   top: 0,
                   ...glyphStyle(edit, fontPx),
                   ...scaleStyle(k, baselinePx),
+                  letterSpacing: `${trackingPx(edit, scale, k)}px`,
                 }}
               >
                 {edit.newText}
@@ -550,7 +564,12 @@ function glyphStyle(edit: TextEdit, fontPx: number): CSSProperties {
     fontStyle: edit.italic ? "italic" : undefined,
     fontFamily: edit.fontFamily ? `${edit.fontFamily}, ${editFamily(!!edit.serif)}` : editFamily(!!edit.serif),
     textDecorationLine: decorationLine(edit),
-    WebkitTextStroke: edit.bold ? `${Math.max(0.3, fontPx * 0.02)}px currentColor` : undefined,
+    // Bold weight comes from the font itself (the injected face, or the bundled bold cut via
+    // font-weight). Only add a HAIRLINE stroke for faux bold (bundled fallback, no injected
+    // face) — and keep it ≤0.2px so it never fills in glyph counters / muddies the text. The
+    // injected font is left untouched so a real bold cut isn't double-thickened.
+    WebkitTextStroke:
+      edit.bold && !edit.fontFamily ? `${Math.min(0.2, fontPx * 0.005)}px currentColor` : undefined,
   };
 }
 
@@ -563,4 +582,19 @@ function glyphStyle(edit: TextEdit, fontPx: number): CSSProperties {
  */
 function scaleStyle(k: number, baselinePx: number): CSSProperties {
   return Math.abs(k - 1) < 0.002 ? {} : { transform: `scale(${k})`, transformOrigin: `0 ${baselinePx}px` };
+}
+
+/**
+ * Letter-spacing (CSS px) that spreads the new text across its original box width without
+ * touching the font size — so the height stays fixed and only the horizontal tracking flexes
+ * to match the page. Distributes the slack between `edit.width` (box) and the text's measured
+ * natural width across the characters; only stretches (never condenses). The element is
+ * scaled by `k`, so the local spacing is the visual gap divided by k.
+ */
+function trackingPx(edit: TextEdit, scale: number, k: number): number {
+  const n = edit.naturalWidth;
+  const len = Array.from(edit.newText).length;
+  if (n == null || !edit.width || len < 1 || k <= 0) return 0;
+  const gapPdf = (edit.width - n) / len; // points of slack per character
+  return gapPdf > 0 ? (gapPdf * scale) / k : 0;
 }

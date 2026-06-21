@@ -50,6 +50,9 @@ export interface TextEdit {
   /** On-screen size correction for the injected font (the WebView renders the raw
    *  program non-em-normalised); the preview draws at `fontSize × scale × sizeScale`. */
   sizeScale?: number;
+  /** Natural advance width (PDF points) of the new text at the corrected size, measured at
+   *  commit. Used to distribute on-screen letter-spacing so the run fits its original box. */
+  naturalWidth?: number;
   /** Font ascent as a fraction of the em (from pdf.js), for baseline-correct overlay. */
   ascent?: number;
 }
