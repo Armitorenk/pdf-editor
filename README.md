@@ -126,9 +126,12 @@ the two coordinate systems never drift.
       blue instead of a white box) and the **original ink colour**. The ink colour is
       taken from the glyph *cores* — the pixels furthest from the background — not an
       average, which would be dragged toward the background by anti-aliased edges and
-      come out washed-out grey. **Boldness is detected** too, from stroke thickness
-      (median ink run-length ÷ font size), and re-applied: in the preview via
-      `font-weight`, and on export via a faux-bold offset double-draw. Serif vs. sans is
+      come out washed-out grey. **Boldness is detected** too, by comparing the run's
+      stroke thickness (median ink run-length ÷ font size) to the page's own body
+      baseline (median across its runs) — a heading measures ~2× the body, so this
+      cleanly tells a bold heading from regular text without an unreliable absolute
+      threshold. It's re-applied in the preview via `font-weight` and on export via a
+      faux-bold offset double-draw. Serif vs. sans is
       detected from the run's font family and the export embeds **two Unicode faces**
       (Noto Sans + a serif). Committed edits render in **every mode** from stored
       PDF-space geometry (untouched pages cost nothing). Edits keyed `pageId:itemIndex`,

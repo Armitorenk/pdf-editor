@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 import { multiplyMatrix } from "@/lib/pdf/coordinates";
-import { sampleRunColors, type PageSample } from "@/lib/pdf/sampleColor";
+import { sampleRunColors, runRelStem, isBold, median, type PageSample } from "@/lib/pdf/sampleColor";
 import { textEditKey, type TextEdit } from "@/lib/pdf/types";
 import { cn } from "@/lib/utils";
 
@@ -64,6 +64,9 @@ export function TextLayer({
   const pageRef = useRef<PDFPageProxy | null>(null);
   // Off-screen render of the page, used to sample real bg/text colours on commit.
   const sampleRef = useRef<PageSample | null>(null);
+  // Median relative stem width of this page's runs = the "regular" baseline that
+  // bold detection compares against (so a heading reads bold but body text doesn't).
+  const pageStemRef = useRef<number | null>(null);
   const [items, setItems] = useState<DetectedText[] | null>(null);
   const [editingKey, setEditingKey] = useState<string | null>(null);
 
@@ -104,10 +107,21 @@ export function TextLayer({
         if (ctx) {
           await page.render({ canvas, viewport: vp }).promise;
           if (!cancelled) {
-            sampleRef.current = {
+            const sample: PageSample = {
               data: ctx.getImageData(0, 0, canvas.width, canvas.height),
               transform: vp.transform,
             };
+            sampleRef.current = sample;
+            // Establish the page's "regular" stem baseline from its runs.
+            const stems: number[] = [];
+            for (const d of detected) {
+              const fs = Math.hypot(d.transform[2], d.transform[3]);
+              if (fs <= 0 || d.width <= 0) continue;
+              const rs = runRelStem(sample, { x: d.transform[4], y: d.transform[5], width: d.width, fontSize: fs });
+              if (rs != null) stems.push(rs);
+              if (stems.length >= 120) break;
+            }
+            pageStemRef.current = median(stems);
           }
         }
       } catch {
@@ -181,15 +195,12 @@ export function TextLayer({
             onRemove(key);
             return;
           }
-          // Sample the page so the edit blends in (real bg colour + ink colour).
-          const colors = sampleRef.current
-            ? sampleRunColors(sampleRef.current, {
-                x: item.transform[4],
-                y: item.transform[5],
-                width: item.width,
-                fontSize: pdfFontSize,
-              })
-            : undefined;
+          // Sample the page so the edit blends in (real bg colour + ink colour) and
+          // matches weight (bold relative to this page's body baseline).
+          const sample = sampleRef.current;
+          const runBox = { x: item.transform[4], y: item.transform[5], width: item.width, fontSize: pdfFontSize };
+          const colors = sample ? sampleRunColors(sample, runBox) : undefined;
+          const bold = sample ? isBold(runRelStem(sample, runBox), pageStemRef.current) : false;
           onCommit({
             pageId,
             itemIndex: item.itemIndex,
@@ -202,7 +213,7 @@ export function TextLayer({
             bgColor: colors?.bg,
             textColor: colors?.text,
             serif: item.serif,
-            bold: colors?.bold,
+            bold,
           });
         };
 

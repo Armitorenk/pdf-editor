@@ -1,8 +1,8 @@
 /**
- * Sample the background colour behind a text run, the run's own ink colour, and
- * whether it is bold — all from the rendered page bitmap. This lets a text edit
- * blend in: cover the old glyphs with the *real* background (e.g. a blue panel)
- * instead of a white box, and redraw in the original colour and weight.
+ * Sample the background colour behind a text run, the run's own ink colour, and a
+ * relative stroke-thickness measure — all from the rendered page bitmap. This lets a
+ * text edit blend in: cover the old glyphs with the *real* background (e.g. a blue
+ * panel) instead of a white box, redraw in the original colour, and match weight.
  *
  * Coordinates: `run` is in PDF user space (points, bottom-left origin). `transform`
  * is the pdf.js viewport transform that maps PDF user space to the bitmap's device
@@ -23,7 +23,6 @@ export interface RunBox {
 export interface RunColors {
   bg: string; // "#rrggbb"
   text: string; // "#rrggbb"
-  bold: boolean;
 }
 
 type Rgb = [number, number, number];
@@ -65,36 +64,33 @@ function dominant(samples: Rgb[]): Rgb | null {
 // A pixel counts as "ink" when it differs from the background by more than this.
 const INK_THRESHOLD2 = 52 * 52;
 
+/** Dominant colour of the bands just above/below the run — the local background. */
+function localBg(data: ImageData, transform: number[], run: RunBox): Rgb {
+  const ts = [0, 0.2, 0.4, 0.6, 0.8, 1];
+  const s: Rgb[] = [];
+  for (const t of ts) {
+    for (const dy of [1.15, 1.0, -0.45, -0.7]) {
+      const p = pixelAt(data, ...toPixel(transform, run.x + t * run.width, run.y + dy * run.fontSize));
+      if (p) s.push(p);
+    }
+  }
+  return dominant(s) ?? [255, 255, 255];
+}
+
 /**
- * Returns the dominant background colour just outside the run, the ink colour of
- * the glyphs themselves, and a bold flag. Falls back to white/black/normal if
- * sampling fails (e.g. a blank slot or an out-of-bounds run).
+ * Returns the dominant background colour just outside the run and the ink colour of
+ * the glyphs themselves. The ink colour comes from the glyph CORES (pixels furthest
+ * from the background), not an average — an average is dragged toward the background
+ * by anti-aliased edges and comes out a washed-out grey.
  */
 export function sampleRunColors(sample: PageSample, run: RunBox): RunColors {
   const { data, transform } = sample;
-  const ts = [0, 0.2, 0.4, 0.6, 0.8, 1];
-  const sx = (t: number) => run.x + t * run.width;
+  const bg = localBg(data, transform, run);
 
-  // Background: bands above the cap height and below the descender — almost always
-  // the page/panel behind the text, never a glyph.
-  const bgSamples: Rgb[] = [];
-  for (const t of ts) {
-    for (const dy of [1.15, 1.0, -0.45, -0.7]) {
-      const p = pixelAt(data, ...toPixel(transform, sx(t), run.y + dy * run.fontSize));
-      if (p) bgSamples.push(p);
-    }
-  }
-  const bg = dominant(bgSamples) ?? [255, 255, 255];
-
-  // Ink: sample a dense grid over the glyph's cap-height band and keep pixels that
-  // differ from the background. The KEY fix vs. naive averaging: an average over all
-  // ink pixels is dragged toward the background by anti-aliased edge pixels, washing
-  // the colour to grey. Instead, keep the pixels FURTHEST from the background (the
-  // solid glyph cores) and take their dominant colour — crisp and saturated.
   const inkSamples: Rgb[] = [];
   for (let t = 0.02; t <= 0.99; t += 0.02) {
     for (let dy = 0.1; dy <= 0.72; dy += 0.06) {
-      const p = pixelAt(data, ...toPixel(transform, sx(t), run.y + dy * run.fontSize));
+      const p = pixelAt(data, ...toPixel(transform, run.x + t * run.width, run.y + dy * run.fontSize));
       if (p && dist2(p, bg) > INK_THRESHOLD2) inkSamples.push(p);
     }
   }
@@ -104,24 +100,27 @@ export function sampleRunColors(sample: PageSample, run: RunBox): RunColors {
     const core = inkSamples.slice(0, Math.max(1, Math.ceil(inkSamples.length * 0.45)));
     text = dominant(core) ?? core[0];
   } else {
-    // No ink found: pick black or white for contrast with the background.
     const lum = 0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2];
     text = lum > 140 ? [0, 0, 0] : [255, 255, 255];
   }
-
-  return { bg: toHex(bg), text: toHex(text), bold: detectBold(data, transform, run, bg) };
+  return { bg: toHex(bg), text: toHex(text) };
 }
 
 /**
- * Estimate boldness from stroke thickness (scale-invariant). Walk several
- * horizontal scanlines across the x-height band and measure runs of consecutive
- * ink pixels; the median run length approximates the stem width. Dividing by the
- * font size gives a relative stem width that's larger for bold faces.
+ * Relative stroke thickness of a run: the median ink run-length along scanlines
+ * across the x-height band, divided by the font size (scale-independent). Used for
+ * RELATIVE bold detection — a run is bold when this is clearly above the page's body
+ * baseline (see `isBold`). Absolute thresholds don't work because a regular sans
+ * stem (~0.09 em) is close to where light bolds start; comparing to the page's own
+ * body text is what reliably separates a bold heading from regular body text.
  */
-function detectBold(data: ImageData, transform: number[], run: RunBox, bg: Rgb): boolean {
+export function runRelStem(sample: PageSample, run: RunBox): number | null {
+  const { data, transform } = sample;
   const scaleX = Math.hypot(transform[0], transform[1]); // device px per point along x
-  if (!(scaleX > 0) || run.width <= 0) return false;
-  const steps = Math.max(12, Math.round(run.width * scaleX));
+  if (!(scaleX > 0) || run.width <= 0) return null;
+  const bg = localBg(data, transform, run);
+  // ~1.5 samples per device pixel so thin stems are resolved; capped for long runs.
+  const steps = Math.max(24, Math.min(500, Math.round(run.width * scaleX * 1.5)));
   const runs: number[] = [];
   for (let dy = 0.2; dy <= 0.62; dy += 0.06) {
     const py = run.y + dy * run.fontSize;
@@ -129,20 +128,38 @@ function detectBold(data: ImageData, transform: number[], run: RunBox, bg: Rgb):
     for (let s = 0; s <= steps; s++) {
       const px = run.x + (s / steps) * run.width;
       const p = pixelAt(data, ...toPixel(transform, px, py));
-      if (p && dist2(p, bg) > INK_THRESHOLD2) {
-        len++;
-      } else {
+      if (p && dist2(p, bg) > INK_THRESHOLD2) len++;
+      else {
         if (len > 0) runs.push(len);
         len = 0;
       }
     }
     if (len > 0) runs.push(len);
   }
-  if (runs.length < 4) return false;
+  if (runs.length < 4) return null;
   runs.sort((a, b) => a - b);
-  const medianPx = runs[Math.floor(runs.length / 2)];
-  const stemPts = medianPx / scaleX;
-  // Regular stems ≈ 0.05–0.08 × font size; bold ≈ 0.10+. Threshold conservatively
-  // so body text is never wrongly bolded.
-  return stemPts / run.fontSize > 0.092;
+  const median = runs[Math.floor(runs.length / 2)];
+  const stemPts = (median * run.width) / steps; // steps span run.width points
+  return stemPts / run.fontSize;
+}
+
+/**
+ * Decide whether a run is bold, given its own relative stem and the page's body
+ * baseline (the median relative stem across the page's runs). Bold headings measure
+ * ~1.6–2× the body weight, so a 1.5× margin catches them while leaving plenty of
+ * room above the body's own variance (so regular text is never wrongly bolded).
+ * Falls back to a conservative absolute threshold when there's no page baseline
+ * (e.g. a one-run page).
+ */
+export function isBold(relStem: number | null, pageBaseline: number | null): boolean {
+  if (relStem == null) return false;
+  if (pageBaseline && pageBaseline > 0) return relStem > pageBaseline * 1.5;
+  return relStem > 0.13;
+}
+
+/** Median of a numeric list, or null when empty. */
+export function median(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
 }
