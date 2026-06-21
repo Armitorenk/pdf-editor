@@ -6,7 +6,6 @@ import { multiplyMatrix } from "@/lib/pdf/coordinates";
 import { sampleRunColors, runRelStem, isBold, percentile, detectDecorations, type PageSample } from "@/lib/pdf/sampleColor";
 import { lookupFontStyle, runIsSkewed, type FontStyleInfo } from "@/lib/pdf/fontStyles";
 import { textEditKey, type TextEdit } from "@/lib/pdf/types";
-import { cn } from "@/lib/utils";
 
 /** A text run detected by pdf.js, with its matrix kept in PDF user space. */
 interface DetectedText {
@@ -312,25 +311,35 @@ export function TextLayer({
     return (
       <div className="pointer-events-none absolute inset-0">
         {pageEdits.map((edit) => {
-          // Same calibrated size as the interactive layer: original size × zoom × the
-          // font's measured correction, so the preview matches the editor exactly.
-          const dispFontPx = edit.fontSize * scale * (edit.sizeScale ?? 1);
+          // Layout at the ORIGINAL size (font-independent PDF math). The cover box hides the
+          // original glyphs; the inner text is size-corrected by a baseline-pinned transform.
+          const fontPx = edit.fontSize * scale;
           const baselineDomY = (pageHeight - edit.y) * scale; // flip Y (un-rotated)
+          const ascent = edit.ascent ?? 0.8;
           return (
-            <span
+            <div
               key={textEditKey(edit.pageId, edit.itemIndex)}
               style={{
-                ...editTextStyle(edit, dispFontPx),
+                ...coverStyle(edit),
                 left: edit.x * scale,
-                // Place the box top an ascent above the baseline so the rendered
-                // text sits exactly on the original baseline (line-height:1).
-                top: baselineDomY - (edit.ascent ?? 0.8) * dispFontPx,
-                minWidth: Math.max(edit.width * scale, dispFontPx * 0.4),
+                top: baselineDomY - ascent * fontPx,
+                minWidth: Math.max(edit.width * scale, fontPx * 0.4),
+                height: fontPx * 1.25,
               }}
-              className="absolute box-content whitespace-nowrap px-0.5 leading-none"
+              className="absolute box-content"
             >
-              {edit.newText}
-            </span>
+              <span
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  top: 0,
+                  ...glyphStyle(edit, fontPx),
+                  ...scaleStyle(edit.sizeScale ?? 1, ascent * fontPx),
+                }}
+              >
+                {edit.newText}
+              </span>
+            </div>
           );
         })}
       </div>
@@ -347,20 +356,20 @@ export function TextLayer({
         const edit = edits[key];
         const isEditing = editingKey === key;
 
-        // Device-space (CSS px) box, from combining the viewport and text matrices.
+        // Device-space (CSS px) box, from combining the viewport and text matrices. Layout
+        // uses the TRUE on-screen size (= scale × transform[3]) — font-independent, so the
+        // box/baseline never depend on the injected font's (broken) metrics. The glyph size
+        // error is corrected separately by a baseline-pinned transform (see scaleStyle).
         const tx = multiplyMatrix(viewport.transform, item.transform);
-        // `fontPx` is the true on-screen size (= scale × transform[3]). When we render in
-        // the run's OWN injected font we multiply by its calibration `sizeScale` so the
-        // WebView's non-normalised program comes out at the right size; the bundled
-        // fallback needs no correction (sizeScale stays 1).
-        const dispFontPx = Math.hypot(tx[2], tx[3]) * item.sizeScale;
+        const fontPx = Math.hypot(tx[2], tx[3]);
         const left = tx[4];
         // tx[5] is the baseline; drop by the font ascent so the box top is right and the
-        // rendered text (line-height:1) sits on the original baseline. Use the calibrated
-        // size so height/baseline track the actual glyph size and nothing overflows.
-        const top = tx[5] - item.ascent * dispFontPx;
-        const widthPx = Math.max(item.width * scale, dispFontPx * 0.4);
-        const boxHeight = dispFontPx * 1.25;
+        // text (line-height:1) sits on the original baseline.
+        const top = tx[5] - item.ascent * fontPx;
+        const baselinePx = item.ascent * fontPx; // baseline offset within the box (px)
+        const widthPx = Math.max(item.width * scale, fontPx * 0.4);
+        const boxHeight = fontPx * 1.25;
+        const k = item.sizeScale;
         const originalFamily = item.fontFamily
           ? `${item.fontFamily}, ${editFamily(item.serif)}`
           : editFamily(item.serif);
@@ -432,41 +441,56 @@ export function TextLayer({
               style={{
                 left,
                 top,
-                // Constrain the editor to the run's original box width (with a small
-                // floor) and keep it on one line, so the replacement stays inside the
-                // original glyph footprint instead of pushing the layout around.
+                // Lay out at the original box width/size; the glyphs are size-corrected by
+                // the baseline-pinned transform, not by font-size.
                 width: widthPx,
                 height: boxHeight,
-                fontSize: dispFontPx,
+                fontSize: fontPx,
                 fontFamily: originalFamily,
                 fontWeight: item.bold ? 700 : undefined,
                 fontStyle: item.italic ? "italic" : undefined,
+                ...scaleStyle(k, baselinePx),
               }}
               className="absolute z-20 box-content whitespace-nowrap border border-blue-500 bg-white px-0.5 leading-none text-black shadow-sm outline-none"
             />
           );
         }
 
+        // Committed edit: a clickable cover (original size, unscaled — always hides the
+        // original) carrying the baseline-scaled glyphs.
+        if (edit) {
+          return (
+            <button
+              key={key}
+              onClick={() => setEditingKey(key)}
+              title={`${item.str} → ${edit.newText}`}
+              style={{ ...coverStyle(edit), left, top, minWidth: widthPx, height: boxHeight }}
+              className="absolute z-10 box-content cursor-text whitespace-nowrap text-left ring-1 ring-amber-400"
+            >
+              <span
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  top: 0,
+                  ...glyphStyle(edit, fontPx),
+                  ...scaleStyle(k, baselinePx),
+                }}
+              >
+                {edit.newText}
+              </span>
+            </button>
+          );
+        }
+
+        // Unedited run: a transparent hit-box at the original layout (no text, no scale).
         return (
           <button
             key={key}
             onClick={() => setEditingKey(key)}
-            title={edit ? `${item.str} → ${edit.newText}` : item.str}
-            style={
-              edit
-                ? { ...editTextStyle(edit, dispFontPx), left, top, width: "auto", minWidth: widthPx }
-                : { left, top, minWidth: widthPx, height: boxHeight, fontSize: dispFontPx }
-            }
-            className={cn(
-              "absolute z-10 box-content cursor-text overflow-hidden whitespace-nowrap text-left leading-none",
-              !edit && "font-sans",
-              edit
-                ? "px-0.5 ring-1 ring-amber-400"
-                : "rounded-sm text-black hover:bg-blue-400/20 hover:ring-1 hover:ring-blue-400",
-            )}
-          >
-            {edit?.newText ?? ""}
-          </button>
+            title={item.str}
+            style={{ left, top, minWidth: widthPx, height: boxHeight }}
+            className="absolute z-10 box-content cursor-text rounded-sm hover:bg-blue-400/20 hover:ring-1 hover:ring-blue-400"
+          />
         );
       })}
     </div>
@@ -479,18 +503,25 @@ function decorationLine(edit: TextEdit): string | undefined {
   return parts.length ? parts.join(" ") : undefined;
 }
 
+/** Background cover for a committed edit (hides the original glyphs underneath). It is laid
+ *  out at the ORIGINAL size and never scaled, so it always covers the run regardless of the
+ *  glyph transform. */
+function coverStyle(edit: TextEdit): CSSProperties {
+  return { backgroundColor: edit.bgColor ?? "#ffffff" };
+}
+
 /**
- * Shared visual style for a committed edit's on-screen text: the document's own injected
- * font when we have it (else a correctly-sized bundled face), with detected colour /
- * weight / slant / decoration. `fontPx` is already the calibrated size. Bold also gets a
- * small `-webkit-text-stroke` so faux-bold runs (whose font has no real bold cut) still
- * read as bold instead of staying thin.
+ * Glyph-only style for a committed edit's text: the document's own injected font (else a
+ * bundled face) with detected colour / weight / slant / decoration, at the ORIGINAL `fontPx`.
+ * The injected font's on-screen size error is corrected by {@link scaleStyle}'s transform,
+ * NEVER by font-size — changing font-size would drag the broken vertical metrics with it and
+ * throw off the baseline. Bold also gets a small `-webkit-text-stroke` for faux-bold runs.
  */
-function editTextStyle(edit: TextEdit, fontPx: number): CSSProperties {
+function glyphStyle(edit: TextEdit, fontPx: number): CSSProperties {
   return {
-    height: fontPx * 1.25,
     fontSize: fontPx,
-    backgroundColor: edit.bgColor ?? "#ffffff",
+    lineHeight: 1,
+    whiteSpace: "nowrap",
     color: edit.textColor ?? "#000000",
     fontWeight: edit.bold ? 700 : undefined,
     fontStyle: edit.italic ? "italic" : undefined,
@@ -498,4 +529,15 @@ function editTextStyle(edit: TextEdit, fontPx: number): CSSProperties {
     textDecorationLine: decorationLine(edit),
     WebkitTextStroke: edit.bold ? `${Math.max(0.3, fontPx * 0.02)}px currentColor` : undefined,
   };
+}
+
+/**
+ * Visual-only size correction. The injected pdf.js program renders 2–3× off in the WebView,
+ * but we DON'T touch font-size (that drifts the baseline via the font's broken vertical
+ * metrics). Instead we keep layout at the true size and scale just the glyphs by `k`,
+ * pinned to the baseline (`0 baselinePx`) — so the run's bottom-left stays exactly on the PDF
+ * coordinate while the letters shrink/grow into the right size. `k≈1` → no transform.
+ */
+function scaleStyle(k: number, baselinePx: number): CSSProperties {
+  return Math.abs(k - 1) < 0.002 ? {} : { transform: `scale(${k})`, transformOrigin: `0 ${baselinePx}px` };
 }
