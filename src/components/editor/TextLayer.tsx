@@ -22,8 +22,6 @@ interface DetectedText {
   italic: boolean;
   /** Font ascent (fraction of em) for baseline-correct overlay placement. */
   ascent: number;
-  /** CSS family of the original font injected via FontFace, if available. */
-  fontFamily?: string;
   /** pdf.js internal font id + resolved PostScript name (for font reuse on export). */
   fontName?: string;
   psName?: string;
@@ -32,23 +30,13 @@ interface DetectedText {
 // Cap the off-screen sampling bitmap so colour detection stays cheap on big pages.
 const SAMPLE_MAX_SIDE = 1400;
 
-// Fonts injected into the DOM (by family name) so the editing UI renders in the
-// document's OWN font, not a system fallback. Loaded once per font program.
-const injectedFonts = new Set<string>();
-function ensureFontFace(psName: string, data: Uint8Array): string {
-  const family = `pdffont-${psName.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
-  if (!injectedFonts.has(family) && typeof FontFace !== "undefined") {
-    injectedFonts.add(family);
-    try {
-      // Copy the bytes — pdf.js may reuse/detach the underlying buffer.
-      const face = new FontFace(family, data.slice().buffer as ArrayBuffer);
-      face.load().then((f) => document.fonts.add(f)).catch(() => injectedFonts.delete(family));
-    } catch {
-      injectedFonts.delete(family);
-    }
-  }
-  return family;
-}
+// The editor previews edits in these bundled faces (the SAME ones export embeds),
+// NOT the document's raw embedded program. Earlier we injected the pdf.js-converted
+// font straight into the DOM via FontFace; in the Android WebView that program is not
+// em-normalised, so it rendered 2–3× too large. The exact embedded font still goes
+// into the downloaded PDF (export.ts reuses + size-calibrates it); on screen we use a
+// close, correctly-sized face. `font-sans`/`font-serif` map to these via globals.css.
+const editFamily = (serif: boolean) => (serif ? "EditorSerif, serif" : "EditorSans, sans-serif");
 
 interface TextLayerProps {
   doc: PDFDocumentProxy;
@@ -162,7 +150,7 @@ export function TextLayer({
       // name + serif flag; the document-wide map gives bold/italic/serif.
       const cache = new Map<
         string,
-        { bold: boolean; italic: boolean; serif: boolean; hasMeta: boolean; psName: string | null; ascent: number; fontFamily?: string }
+        { bold: boolean; italic: boolean; serif: boolean; hasMeta: boolean; psName: string | null; ascent: number }
       >();
       const baseStyle = (fontName: string | undefined) => {
         const key = fontName ?? "";
@@ -170,14 +158,11 @@ export function TextLayer({
         if (hit) return hit;
         let psName: string | null = null;
         let serifFlag: boolean | null = null;
-        let fontFamily: string | undefined;
         try {
           const fo = fontName && page.commonObjs.has(fontName) ? page.commonObjs.get(fontName) : null;
           if (fo) {
             psName = (fo.name as string) ?? null;
             if (typeof fo.isSerifFont === "boolean") serifFlag = fo.isSerifFont;
-            // Inject the document's own font into the DOM so the editor shows it.
-            if (fo.data && psName) fontFamily = ensureFontFace(psName, fo.data as Uint8Array);
           }
         } catch {
           /* font not resolved — fall through to family/heuristics */
@@ -194,7 +179,6 @@ export function TextLayer({
           hasMeta: !!meta,
           psName,
           ascent,
-          fontFamily,
         };
         cache.set(key, out);
         return out;
@@ -223,7 +207,6 @@ export function TextLayer({
           bold,
           italic,
           ascent: b.ascent,
-          fontFamily: b.fontFamily,
           fontName: r.fontName,
           psName: b.psName ?? undefined,
         };
@@ -284,10 +267,7 @@ export function TextLayer({
         const top = tx[5] - item.ascent * fontPx;
         const widthPx = Math.max(item.width * scale, fontPx * 0.4);
         const boxHeight = fontPx * 1.25;
-        // Always resolve to a concrete family: the run's own injected font if we have
-        // it, else the SAME bundled face the export uses (never the platform UI font,
-        // which renders larger and made edits look oversized).
-        const originalFamily = `${item.fontFamily ? item.fontFamily + ", " : ""}${item.serif ? "EditorSerif" : "EditorSans"}`;
+        const originalFamily = editFamily(item.serif);
 
         // PDF-space font size (zoom-independent), captured for export.
         const pdfFontSize = Math.hypot(item.transform[2], item.transform[3]);
@@ -332,7 +312,6 @@ export function TextLayer({
             underline: deco?.underline,
             strike: deco?.strike,
             fontPsName: item.psName,
-            fontFamily: item.fontFamily,
             ascent: item.ascent,
           });
         };
@@ -355,7 +334,10 @@ export function TextLayer({
               style={{
                 left,
                 top,
-                minWidth: widthPx,
+                // Constrain the editor to the run's original box width (with a small
+                // floor) and keep it on one line, so the replacement stays inside the
+                // original glyph footprint instead of pushing the layout around.
+                width: widthPx,
                 height: boxHeight,
                 fontSize: fontPx,
                 fontFamily: originalFamily,
@@ -400,10 +382,10 @@ function decorationLine(edit: TextEdit): string | undefined {
 }
 
 /**
- * Shared visual style for a committed edit's on-screen text: the document's own font
- * (FontFace-injected) with detected colour/weight/slant/decoration. Bold also gets a
- * small `-webkit-text-stroke` so faux-bold runs (whose font has no real bold cut)
- * still read as bold instead of staying thin.
+ * Shared visual style for a committed edit's on-screen text: a correctly-sized bundled
+ * face (matching what export embeds) with detected colour/weight/slant/decoration. Bold
+ * also gets a small `-webkit-text-stroke` so faux-bold runs (whose font has no real bold
+ * cut) still read as bold instead of staying thin.
  */
 function editTextStyle(edit: TextEdit, fontPx: number): CSSProperties {
   return {
@@ -413,7 +395,7 @@ function editTextStyle(edit: TextEdit, fontPx: number): CSSProperties {
     color: edit.textColor ?? "#000000",
     fontWeight: edit.bold ? 700 : undefined,
     fontStyle: edit.italic ? "italic" : undefined,
-    fontFamily: `${edit.fontFamily ? edit.fontFamily + ", " : ""}${edit.serif ? "EditorSerif" : "EditorSans"}`,
+    fontFamily: editFamily(!!edit.serif),
     textDecorationLine: decorationLine(edit),
     WebkitTextStroke: edit.bold ? `${Math.max(0.3, fontPx * 0.02)}px currentColor` : undefined,
   };

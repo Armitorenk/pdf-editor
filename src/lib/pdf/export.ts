@@ -133,26 +133,42 @@ export async function exportPdf(
                   : sansFont);
         const fauxBold = !reuse && edit.bold && edit.serif;
         try {
-          const newWidth = font.widthOfTextAtSize(edit.newText, edit.fontSize);
+          // (1) Size calibration. A reused (pdf.js-converted) program can carry metrics
+          // that make pdf-lib draw it over/undersized. Compare its width for the ORIGINAL
+          // run text against pdf.js's measured advance (edit.width, in points) and rescale
+          // so the glyphs land at the document's true size. Bundled faces are left as-is.
+          let size = edit.fontSize;
+          if (reuse && edit.originalText && edit.width > 0) {
+            const w0 = reuse.widthOfTextAtSize(edit.originalText, edit.fontSize);
+            if (w0 > 0) {
+              const k = edit.width / w0;
+              if (k > 0.25 && k < 4) size = edit.fontSize * k;
+            }
+          }
+          // (2) Cover the original glyphs (sized from the ORIGINAL font size so it always
+          // hides them), then (3) draw the new text tracked to the run's box width.
+          const natural = font.widthOfTextAtSize(edit.newText, size);
+          const boxW = Math.max(edit.width, natural);
           page.drawRectangle({
             x: edit.x,
             y: edit.y - edit.fontSize * 0.25,
-            width: Math.max(edit.width, newWidth),
+            width: boxW,
             height: edit.fontSize * 1.2,
             color: hexToRgb(edit.bgColor ?? "#ffffff", rgb),
           });
           const color = hexToRgb(edit.textColor ?? "#000000", rgb);
           const drawAt = (dx: number, dy: number) =>
-            page.drawText(edit.newText, {
+            drawTracked(page, edit.newText, {
               x: edit.x + dx,
               y: edit.y + dy,
-              size: edit.fontSize,
+              size,
               font,
               color,
+              targetWidth: edit.width,
             });
           drawAt(0, 0);
           if (fauxBold) {
-            const d = edit.fontSize * 0.03;
+            const d = size * 0.03;
             drawAt(d, 0);
             drawAt(0, d);
             drawAt(d, d);
@@ -160,7 +176,7 @@ export async function exportPdf(
           // Redraw underline / strikethrough across the new text (the white cover
           // erased the original vector line), so the decoration survives the edit.
           if (edit.underline || edit.strike) {
-            const lineW = Math.max(edit.width, newWidth);
+            const lineW = boxW;
             const thickness = Math.max(0.6, edit.fontSize * 0.05);
             if (edit.underline) {
               const y = edit.y - edit.fontSize * 0.1;
@@ -243,6 +259,33 @@ function drawAnnotation(page: PDFPage, ann: Annotation, color: RGB): void {
     borderWidth: ann.strokeWidth,
     opacity: 0,
   });
+}
+
+/**
+ * Draw `text` at `size`, distributing letter-spacing (tracking) so the run spans about
+ * `targetWidth` points — keeping the replacement inside the original glyph box instead of
+ * spilling past it. The slack is clamped so text never condenses/stretches to the point of
+ * being unreadable. 1-char / degenerate runs fall back to a single `drawText`.
+ */
+function drawTracked(
+  page: PDFPage,
+  text: string,
+  opts: { x: number; y: number; size: number; font: PDFFont; color: RGB; targetWidth: number },
+): void {
+  const { x, y, size, font, color, targetWidth } = opts;
+  const chars = Array.from(text);
+  const natural = font.widthOfTextAtSize(text, size);
+  if (chars.length < 2 || targetWidth <= 0 || natural <= 0) {
+    page.drawText(text, { x, y, size, font, color });
+    return;
+  }
+  let gap = (targetWidth - natural) / (chars.length - 1);
+  gap = Math.max(-size * 0.22, Math.min(size * 0.6, gap));
+  let cx = x;
+  for (const ch of chars) {
+    page.drawText(ch, { x: cx, y, size, font, color });
+    cx += font.widthOfTextAtSize(ch, size) + gap;
+  }
 }
 
 /** "#rrggbb" -> pdf-lib RGB (channels 0..1). */
