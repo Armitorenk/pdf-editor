@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useRef, useState } from "react";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 import { multiplyMatrix } from "@/lib/pdf/coordinates";
 import { sampleRunColors, runRelStem, isBold, percentile, detectDecorations, type PageSample } from "@/lib/pdf/sampleColor";
@@ -20,6 +20,10 @@ interface DetectedText {
   serif: boolean;
   bold: boolean;
   italic: boolean;
+  /** Font ascent (fraction of em) for baseline-correct overlay placement. */
+  ascent: number;
+  /** CSS family of the original font injected via FontFace, if available. */
+  fontFamily?: string;
   /** pdf.js internal font id + resolved PostScript name (for font reuse on export). */
   fontName?: string;
   psName?: string;
@@ -27,6 +31,24 @@ interface DetectedText {
 
 // Cap the off-screen sampling bitmap so colour detection stays cheap on big pages.
 const SAMPLE_MAX_SIDE = 1400;
+
+// Fonts injected into the DOM (by family name) so the editing UI renders in the
+// document's OWN font, not a system fallback. Loaded once per font program.
+const injectedFonts = new Set<string>();
+function ensureFontFace(psName: string, data: Uint8Array): string {
+  const family = `pdffont-${psName.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+  if (!injectedFonts.has(family) && typeof FontFace !== "undefined") {
+    injectedFonts.add(family);
+    try {
+      // Copy the bytes — pdf.js may reuse/detach the underlying buffer.
+      const face = new FontFace(family, data.slice().buffer as ArrayBuffer);
+      face.load().then((f) => document.fonts.add(f)).catch(() => injectedFonts.delete(family));
+    } catch {
+      injectedFonts.delete(family);
+    }
+  }
+  return family;
+}
 
 interface TextLayerProps {
   doc: PDFDocumentProxy;
@@ -138,31 +160,41 @@ export function TextLayer({
       // Resolve each font's base style from the PDF's metadata (cached per font).
       // pdf.js `commonObjs` (populated by the render above) gives the real PostScript
       // name + serif flag; the document-wide map gives bold/italic/serif.
-      const cache = new Map<string, { bold: boolean; italic: boolean; serif: boolean; hasMeta: boolean; psName: string | null }>();
+      const cache = new Map<
+        string,
+        { bold: boolean; italic: boolean; serif: boolean; hasMeta: boolean; psName: string | null; ascent: number; fontFamily?: string }
+      >();
       const baseStyle = (fontName: string | undefined) => {
         const key = fontName ?? "";
         const hit = cache.get(key);
         if (hit) return hit;
         let psName: string | null = null;
         let serifFlag: boolean | null = null;
+        let fontFamily: string | undefined;
         try {
           const fo = fontName && page.commonObjs.has(fontName) ? page.commonObjs.get(fontName) : null;
           if (fo) {
             psName = (fo.name as string) ?? null;
             if (typeof fo.isSerifFont === "boolean") serifFlag = fo.isSerifFont;
+            // Inject the document's own font into the DOM so the editor shows it.
+            if (fo.data && psName) fontFamily = ensureFontFace(psName, fo.data as Uint8Array);
           }
         } catch {
           /* font not resolved — fall through to family/heuristics */
         }
         const meta = lookupFontStyle(fontStyleMap, psName);
-        const family = (fontName && content.styles[fontName]?.fontFamily) || "";
+        const styleEntry = fontName ? content.styles[fontName] : undefined;
+        const family = styleEntry?.fontFamily || "";
         const familySerif = /serif/i.test(family) && !/sans/i.test(family);
+        const ascent = typeof styleEntry?.ascent === "number" && styleEntry.ascent > 0 ? styleEntry.ascent : 0.8;
         const out = {
           bold: meta?.bold ?? false,
           italic: meta?.italic ?? false,
           serif: meta?.serif ?? serifFlag ?? familySerif,
           hasMeta: !!meta,
           psName,
+          ascent,
+          fontFamily,
         };
         cache.set(key, out);
         return out;
@@ -190,6 +222,8 @@ export function TextLayer({
           serif: b.serif,
           bold,
           italic,
+          ascent: b.ascent,
+          fontFamily: b.fontFamily,
           fontName: r.fontName,
           psName: b.psName ?? undefined,
         };
@@ -214,20 +248,16 @@ export function TextLayer({
             <span
               key={textEditKey(edit.pageId, edit.itemIndex)}
               style={{
+                ...editTextStyle(edit, fontPx),
                 left: edit.x * scale,
-                top: baselineDomY - fontPx,
+                // Place the box top an ascent above the baseline so the rendered
+                // text sits exactly on the original baseline (line-height:1).
+                top: baselineDomY - (edit.ascent ?? 0.8) * fontPx,
                 minWidth: Math.max(edit.width * scale, fontPx * 0.4),
-                height: fontPx * 1.25,
-                fontSize: fontPx,
-                backgroundColor: edit.bgColor ?? "#ffffff",
-                color: edit.textColor ?? "#000000",
-                fontWeight: edit.bold ? 700 : undefined,
-                fontStyle: edit.italic ? "italic" : undefined,
-                textDecorationLine: decorationLine(edit),
               }}
               className={cn(
                 "absolute box-content whitespace-nowrap px-0.5 leading-none",
-                edit.serif ? "font-serif" : "font-sans",
+                edit.fontFamily ? undefined : edit.serif ? "font-serif" : "font-sans",
               )}
             >
               {edit.newText}
@@ -252,9 +282,14 @@ export function TextLayer({
         const tx = multiplyMatrix(viewport.transform, item.transform);
         const fontPx = Math.hypot(tx[2], tx[3]);
         const left = tx[4];
-        const top = tx[5] - fontPx;
+        // tx[5] is the baseline; drop by the font ascent so the box top is right and
+        // the rendered text (line-height:1) sits on the original baseline.
+        const top = tx[5] - item.ascent * fontPx;
         const widthPx = Math.max(item.width * scale, fontPx * 0.4);
         const boxHeight = fontPx * 1.25;
+        const originalFamily = item.fontFamily
+          ? `${item.fontFamily}, ${item.serif ? "serif" : "sans-serif"}`
+          : undefined;
 
         // PDF-space font size (zoom-independent), captured for export.
         const pdfFontSize = Math.hypot(item.transform[2], item.transform[3]);
@@ -299,6 +334,8 @@ export function TextLayer({
             underline: deco?.underline,
             strike: deco?.strike,
             fontPsName: item.psName,
+            fontFamily: item.fontFamily,
+            ascent: item.ascent,
           });
         };
 
@@ -317,8 +354,17 @@ export function TextLayer({
                   setEditingKey(null);
                 }
               }}
-              style={{ left, top, minWidth: widthPx, height: boxHeight, fontSize: fontPx }}
-              className="absolute z-20 box-content whitespace-nowrap border border-blue-500 bg-white px-0.5 font-sans leading-none text-black shadow-sm outline-none"
+              style={{
+                left,
+                top,
+                minWidth: widthPx,
+                height: boxHeight,
+                fontSize: fontPx,
+                fontFamily: originalFamily,
+                fontWeight: item.bold ? 700 : undefined,
+                fontStyle: item.italic ? "italic" : undefined,
+              }}
+              className="absolute z-20 box-content whitespace-nowrap border border-blue-500 bg-white px-0.5 leading-none text-black shadow-sm outline-none"
             />
           );
         }
@@ -328,22 +374,14 @@ export function TextLayer({
             key={key}
             onClick={() => setEditingKey(key)}
             title={edit ? `${item.str} → ${edit.newText}` : item.str}
-            style={{
-              left,
-              top,
-              width: edit ? "auto" : widthPx,
-              minWidth: widthPx,
-              height: boxHeight,
-              fontSize: fontPx,
-              backgroundColor: edit ? edit.bgColor ?? "#ffffff" : undefined,
-              color: edit ? edit.textColor ?? "#000000" : undefined,
-              fontWeight: edit?.bold ? 700 : undefined,
-              fontStyle: edit?.italic ? "italic" : undefined,
-              textDecorationLine: edit ? decorationLine(edit) : undefined,
-            }}
+            style={
+              edit
+                ? { ...editTextStyle(edit, fontPx), left, top, width: "auto", minWidth: widthPx }
+                : { left, top, minWidth: widthPx, height: boxHeight, fontSize: fontPx }
+            }
             className={cn(
               "absolute z-10 box-content cursor-text overflow-hidden whitespace-nowrap text-left leading-none",
-              edit?.serif ? "font-serif" : "font-sans",
+              !edit && "font-sans",
               edit
                 ? "px-0.5 ring-1 ring-amber-400"
                 : "rounded-sm text-black hover:bg-blue-400/20 hover:ring-1 hover:ring-blue-400",
@@ -361,4 +399,24 @@ export function TextLayer({
 function decorationLine(edit: TextEdit): string | undefined {
   const parts = [edit.underline ? "underline" : "", edit.strike ? "line-through" : ""].filter(Boolean);
   return parts.length ? parts.join(" ") : undefined;
+}
+
+/**
+ * Shared visual style for a committed edit's on-screen text: the document's own font
+ * (FontFace-injected) with detected colour/weight/slant/decoration. Bold also gets a
+ * small `-webkit-text-stroke` so faux-bold runs (whose font has no real bold cut)
+ * still read as bold instead of staying thin.
+ */
+function editTextStyle(edit: TextEdit, fontPx: number): CSSProperties {
+  return {
+    height: fontPx * 1.25,
+    fontSize: fontPx,
+    backgroundColor: edit.bgColor ?? "#ffffff",
+    color: edit.textColor ?? "#000000",
+    fontWeight: edit.bold ? 700 : undefined,
+    fontStyle: edit.italic ? "italic" : undefined,
+    fontFamily: edit.fontFamily ? `${edit.fontFamily}, ${edit.serif ? "serif" : "sans-serif"}` : undefined,
+    textDecorationLine: decorationLine(edit),
+    WebkitTextStroke: edit.bold ? `${Math.max(0.3, fontPx * 0.02)}px currentColor` : undefined,
+  };
 }

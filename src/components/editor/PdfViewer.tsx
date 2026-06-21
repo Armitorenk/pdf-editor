@@ -205,7 +205,10 @@ export function PdfViewer(props: PdfViewerProps) {
     <div
       ref={containerRef}
       onScroll={handleScroll}
-      className="relative h-full overflow-auto bg-neutral-200"
+      // `touch-pan-x/y` lets a one-finger drag pan both axes (the two-finger pinch is
+      // handled in JS); `overscroll-contain` stops a pan at the edge from triggering
+      // the system back-swipe. Crisp pages come from the DPR-aware canvas renderer.
+      className="relative h-full overflow-auto overscroll-contain touch-pan-x touch-pan-y bg-neutral-200"
     >
       <div className="flex min-w-full flex-col items-center gap-6 p-6">
         {slotSizes?.map((size, i) => {

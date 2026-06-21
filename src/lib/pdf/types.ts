@@ -44,6 +44,11 @@ export interface TextEdit {
   /** PostScript name of the run's original font — used to reuse the embedded font on
    *  export when it covers the new text (see the font-reuse path in export.ts). */
   fontPsName?: string;
+  /** CSS font-family of the original font once injected into the DOM via FontFace,
+   *  so the on-screen preview matches the page (else falls back to serif/sans). */
+  fontFamily?: string;
+  /** Font ascent as a fraction of the em (from pdf.js), for baseline-correct overlay. */
+  ascent?: number;
 }
 
 /** Stable map key for a text edit. */
