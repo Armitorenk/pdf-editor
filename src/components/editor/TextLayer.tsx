@@ -66,8 +66,10 @@ function ensureFontFace(psName: string, data: Uint8Array): string {
  * 2–3× too big. We measure the injected face's REAL advance for an actual run and compare
  * it to pdf.js's known advance, yielding a scale `k = expected / measured`; rendering the
  * text at `fontSize * k` cancels the distortion. Same idea as export.ts's width
- * calibration, but measured live in the DOM via canvas `measureText`. Fonts that don't
- * load (or measure sanely) are simply left out → the caller uses the bundled face at 1×.
+ * calibration, but measured live in the DOM. We measure with a REAL hidden <span> +
+ * getBoundingClientRect (NOT canvas `measureText`, which mis-sizes freshly FontFace-
+ * injected broken-metric fonts in the Android WebView) so `k` reflects the exact pixels
+ * the engine paints. Fonts that don't load / measure sanely are left out → bundled at 1×.
  */
 async function calibrateFonts(
   raw: { str: string; transform: number[]; width: number; fontName?: string }[],
@@ -75,33 +77,42 @@ async function calibrateFonts(
 ): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   if (typeof document === "undefined" || !document.fonts) return out;
-  const ctx = document.createElement("canvas").getContext("2d");
-  if (!ctx) return out;
-  // Wait (bounded) for the injected faces so measureText uses them, not a fallback.
+  // Wait (bounded) for the injected faces so the probe renders them, not a fallback.
   const families = [...new Set(Array.from(cache.values()).map((c) => c.fontFamily).filter((f): f is string => !!f))];
   await Promise.race([
     Promise.allSettled(families.map((f) => injectedFonts.get(f) ?? Promise.resolve())),
     new Promise((r) => setTimeout(r, 1500)),
   ]);
+  // One off-screen probe span reused for every font (visibility:hidden keeps layout; it must
+  // NOT be display:none, which would have no box to measure).
+  const probe = document.createElement("span");
+  probe.style.cssText =
+    "position:absolute;left:-9999px;top:-9999px;visibility:hidden;white-space:nowrap;padding:0;margin:0;border:0;line-height:1;";
+  document.body.appendChild(probe);
   const M = 256; // large measuring size → a stable ratio
   const seen = new Set<string>();
-  for (const r of raw) {
-    const key = r.fontName ?? "";
-    if (seen.has(key)) continue;
-    const family = cache.get(key)?.fontFamily;
-    if (!family) continue;
-    const fs = Math.hypot(r.transform[2], r.transform[3]);
-    if (fs <= 0 || r.width <= 0 || r.str.trim().length === 0) continue;
-    seen.add(key);
-    const spec = `${M}px "${family}"`;
-    if (!document.fonts.check(spec)) continue; // face unavailable — fall back to bundled
-    ctx.font = spec;
-    const measured = ctx.measureText(r.str).width; // px the run actually spans at size M
-    const expected = r.width * (M / fs); // px it SHOULD span (pdf.js advance, scaled to M)
-    if (measured > 1 && expected > 1) {
-      const k = expected / measured;
-      if (k > 0.2 && k < 5) out.set(key, k);
+  try {
+    for (const r of raw) {
+      const key = r.fontName ?? "";
+      if (seen.has(key)) continue;
+      const family = cache.get(key)?.fontFamily;
+      if (!family) continue;
+      const fs = Math.hypot(r.transform[2], r.transform[3]);
+      if (fs <= 0 || r.width <= 0 || r.str.trim().length === 0) continue;
+      seen.add(key);
+      if (!document.fonts.check(`${M}px "${family}"`)) continue; // face unavailable → bundled
+      probe.style.fontFamily = `"${family}"`;
+      probe.style.fontSize = `${M}px`;
+      probe.textContent = r.str;
+      const measured = probe.getBoundingClientRect().width; // px the engine actually paints
+      const expected = r.width * (M / fs); // px it SHOULD span (pdf.js advance, scaled to M)
+      if (measured > 1 && expected > 1) {
+        const k = expected / measured;
+        if (k > 0.2 && k < 5) out.set(key, k);
+      }
     }
+  } finally {
+    probe.remove();
   }
   return out;
 }
@@ -441,10 +452,12 @@ export function TextLayer({
               style={{
                 left,
                 top,
-                // Lay out at the original box width/size; the glyphs are size-corrected by
-                // the baseline-pinned transform, not by font-size.
-                width: widthPx,
-                height: boxHeight,
+                // Anti-scale: the whole input is shrunk by `scale(k)` (baseline-pinned), so
+                // pre-divide width/height by k. After the transform the box is back at its
+                // physical 1× size, while the oversized injected font shrinks to fit — no
+                // tiny typing box, no horizontal scroll while editing.
+                width: widthPx / k,
+                height: boxHeight / k,
                 fontSize: fontPx,
                 fontFamily: originalFamily,
                 fontWeight: item.bold ? 700 : undefined,
