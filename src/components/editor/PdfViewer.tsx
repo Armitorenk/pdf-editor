@@ -210,7 +210,12 @@ export function PdfViewer(props: PdfViewerProps) {
       // the system back-swipe. Crisp pages come from the DPR-aware canvas renderer.
       className="relative h-full overflow-auto overscroll-contain touch-pan-x touch-pan-y bg-neutral-200"
     >
-      <div className="flex min-w-full flex-col items-center gap-6 p-6">
+      {/* `w-max` lets this grow to the widest page so a zoomed/wide page can be
+          panned all the way to its LEFT edge. With a plain `min-w-full` block the
+          container stays at viewport width and `items-center` pushes the page's left
+          half into unreachable negative-scroll space. `min-w-full` still fills the
+          width (centring pages) when everything fits. */}
+      <div className="flex w-max min-w-full flex-col items-center gap-6 p-6">
         {slotSizes?.map((size, i) => {
           const ref = pageOrder[i];
           return (

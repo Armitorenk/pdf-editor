@@ -27,6 +27,46 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* Editor fonts — the SAME faces the PDF export embeds (Source Sans 3 + a serif).
+   The text-edit overlay falls back to these instead of the platform UI font, so
+   (a) the on-screen text matches the downloaded PDF, and (b) it avoids Android's
+   Roboto/Noto, whose larger glyphs made edited text look oversized vs the page. */
+@font-face {
+  font-family: "EditorSans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/editor-sans.ttf") format("truetype");
+}
+@font-face {
+  font-family: "EditorSans";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/editor-sans-bold.ttf") format("truetype");
+}
+@font-face {
+  font-family: "EditorSans";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/editor-sans-italic.ttf") format("truetype");
+}
+@font-face {
+  font-family: "EditorSans";
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/editor-sans-bolditalic.ttf") format("truetype");
+}
+@font-face {
+  font-family: "EditorSerif";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/editor-serif.ttf") format("truetype");
+}
+
 /* Safe-area helpers for notches / gesture bars (viewport-fit: cover). */
 .pt-safe {
   padding-top: env(safe-area-inset-top);

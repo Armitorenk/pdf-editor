@@ -255,10 +255,7 @@ export function TextLayer({
                 top: baselineDomY - (edit.ascent ?? 0.8) * fontPx,
                 minWidth: Math.max(edit.width * scale, fontPx * 0.4),
               }}
-              className={cn(
-                "absolute box-content whitespace-nowrap px-0.5 leading-none",
-                edit.fontFamily ? undefined : edit.serif ? "font-serif" : "font-sans",
-              )}
+              className="absolute box-content whitespace-nowrap px-0.5 leading-none"
             >
               {edit.newText}
             </span>
@@ -287,9 +284,10 @@ export function TextLayer({
         const top = tx[5] - item.ascent * fontPx;
         const widthPx = Math.max(item.width * scale, fontPx * 0.4);
         const boxHeight = fontPx * 1.25;
-        const originalFamily = item.fontFamily
-          ? `${item.fontFamily}, ${item.serif ? "serif" : "sans-serif"}`
-          : undefined;
+        // Always resolve to a concrete family: the run's own injected font if we have
+        // it, else the SAME bundled face the export uses (never the platform UI font,
+        // which renders larger and made edits look oversized).
+        const originalFamily = `${item.fontFamily ? item.fontFamily + ", " : ""}${item.serif ? "EditorSerif" : "EditorSans"}`;
 
         // PDF-space font size (zoom-independent), captured for export.
         const pdfFontSize = Math.hypot(item.transform[2], item.transform[3]);
@@ -415,7 +413,7 @@ function editTextStyle(edit: TextEdit, fontPx: number): CSSProperties {
     color: edit.textColor ?? "#000000",
     fontWeight: edit.bold ? 700 : undefined,
     fontStyle: edit.italic ? "italic" : undefined,
-    fontFamily: edit.fontFamily ? `${edit.fontFamily}, ${edit.serif ? "serif" : "sans-serif"}` : undefined,
+    fontFamily: `${edit.fontFamily ? edit.fontFamily + ", " : ""}${edit.serif ? "EditorSerif" : "EditorSans"}`,
     textDecorationLine: decorationLine(edit),
     WebkitTextStroke: edit.bold ? `${Math.max(0.3, fontPx * 0.02)}px currentColor` : undefined,
   };
