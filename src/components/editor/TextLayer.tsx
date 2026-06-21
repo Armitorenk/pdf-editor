@@ -343,13 +343,15 @@ export function TextLayer({
           const fontPx = edit.fontSize * scale;
           const baselineDomY = (pageHeight - edit.y) * scale; // flip Y (un-rotated)
           const ascent = edit.ascent ?? 0.8;
+          // Ascent drop + a 0.04em lift onto the true baseline (matches the interactive layer).
+          const baselinePx = ascent * fontPx + fontPx * 0.04;
           return (
             <div
               key={textEditKey(edit.pageId, edit.itemIndex)}
               style={{
                 ...coverStyle(edit),
                 left: edit.x * scale,
-                top: baselineDomY - ascent * fontPx,
+                top: baselineDomY - baselinePx,
                 minWidth: Math.max(edit.width * scale, fontPx * 0.4),
                 height: fontPx * 1.25,
               }}
@@ -361,7 +363,7 @@ export function TextLayer({
                   left: 0,
                   top: 0,
                   ...glyphStyle(edit, fontPx),
-                  ...scaleStyle(edit.sizeScale ?? 1, ascent * fontPx),
+                  ...scaleStyle(edit.sizeScale ?? 1, baselinePx),
                   letterSpacing: `${trackingPx(edit, scale, edit.sizeScale ?? 1)}px`,
                 }}
               >
@@ -391,10 +393,12 @@ export function TextLayer({
         const tx = multiplyMatrix(viewport.transform, item.transform);
         const fontPx = Math.hypot(tx[2], tx[3]);
         const left = tx[4];
-        // tx[5] is the baseline; drop by the font ascent so the box top is right and the
-        // text (line-height:1) sits on the original baseline.
-        const top = tx[5] - item.ascent * fontPx;
-        const baselinePx = item.ascent * fontPx; // baseline offset within the box (px)
+        // Baseline/pivot offset within the box. tx[5] is the PDF baseline; we drop by the font
+        // ascent PLUS a tiny 0.04em upward lift that corrects the 1–2px sag the ascent estimate
+        // leaves on some fonts at high zoom. `top` and the transform pivot share this so they
+        // stay locked together.
+        const baselinePx = item.ascent * fontPx + fontPx * 0.04;
+        const top = tx[5] - baselinePx;
         const widthPx = Math.max(item.width * scale, fontPx * 0.4);
         const boxHeight = fontPx * 1.25;
         const k = item.sizeScale;
@@ -485,6 +489,9 @@ export function TextLayer({
                 fontFamily: originalFamily,
                 fontWeight: item.bold ? 700 : undefined,
                 fontStyle: item.italic ? "italic" : undefined,
+                textRendering: "geometricPrecision",
+                WebkitFontSmoothing: "antialiased",
+                MozOsxFontSmoothing: "grayscale",
                 ...scaleStyle(k, baselinePx),
               }}
               className="absolute z-20 box-content whitespace-nowrap border border-blue-500 bg-white px-0.5 leading-none text-black shadow-sm outline-none"
@@ -559,6 +566,11 @@ function glyphStyle(edit: TextEdit, fontPx: number): CSSProperties {
     fontSize: fontPx,
     lineHeight: 1,
     whiteSpace: "nowrap",
+    // Geometric precision: stop the engine snapping/hinting glyphs to the pixel grid, which
+    // nudged the size a hair off the exact PDF math at high zoom.
+    textRendering: "geometricPrecision",
+    WebkitFontSmoothing: "antialiased",
+    MozOsxFontSmoothing: "grayscale",
     color: edit.textColor ?? "#000000",
     fontWeight: edit.bold ? 700 : undefined,
     fontStyle: edit.italic ? "italic" : undefined,
@@ -596,5 +608,10 @@ function trackingPx(edit: TextEdit, scale: number, k: number): number {
   const len = Array.from(edit.newText).length;
   if (n == null || !edit.width || len < 1 || k <= 0) return 0;
   const gapPdf = (edit.width - n) / len; // points of slack per character
-  return gapPdf > 0 ? (gapPdf * scale) / k : 0;
+  // Cap the per-char gap so a very short replacement in a long box doesn't rubber-band the
+  // letters across the whole width; past the cap the run just stays left-aligned with natural
+  // spacing (max 15% of the font size).
+  const maxGap = (edit.fontSize ?? 12) * 0.15;
+  const clampedGap = Math.min(gapPdf, maxGap);
+  return clampedGap > 0 ? (clampedGap * scale) / k : 0;
 }
