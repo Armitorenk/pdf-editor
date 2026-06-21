@@ -7,8 +7,8 @@ export interface PageSize {
   height: number;
 }
 
-/** Active editing tool. */
-export type EditMode = "view" | "text" | "image" | "annotate";
+/** Active editing tool. `object` = box an existing object and lift it into an overlay. */
+export type EditMode = "view" | "text" | "image" | "annotate" | "object";
 
 /**
  * A page slot in the working document. Pages are referenced by a STABLE `id`, not
@@ -32,6 +32,11 @@ export interface TextEdit {
   y: number; // baseline y, from the page bottom
   fontSize: number;
   width: number; // original run width in points
+  // Detected from the rendered page so the edit blends in (all optional for
+  // backward-compat with older saved projects):
+  bgColor?: string; // "#rrggbb" sampled behind the run; covers the old glyphs
+  textColor?: string; // "#rrggbb" sampled from the original glyphs
+  serif?: boolean; // original run used a serif family -> export with a serif font
 }
 
 /** Stable map key for a text edit. */

@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronLeft, FileText, Layers, Pencil, Image as ImageIcon, Type, Upload, Eye } from "lucide-react";
+import { ChevronLeft, Crop, FileText, Layers, Pencil, Image as ImageIcon, Redo2, Type, Undo2, Upload, Eye } from "lucide-react";
 import { ExportMenu } from "./ExportMenu";
 import type { ExportFormat } from "@/lib/pdf/convert";
 import type { EditMode } from "@/lib/pdf/types";
@@ -11,6 +11,7 @@ const MODES: { mode: EditMode; label: string; Icon: typeof Eye }[] = [
   { mode: "text", label: "Text", Icon: Type },
   { mode: "image", label: "Image", Icon: ImageIcon },
   { mode: "annotate", label: "Draw", Icon: Pencil },
+  { mode: "object", label: "Object", Icon: Crop },
 ];
 
 interface MobileToolbarProps {
@@ -26,6 +27,10 @@ interface MobileToolbarProps {
   onSetMode: (mode: EditMode) => void;
   onExport: (format: ExportFormat) => void;
   onHome: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
 }
 
 /**
@@ -47,6 +52,10 @@ export function MobileToolbar({
   onSetMode,
   onExport,
   onHome,
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
 }: MobileToolbarProps) {
   return (
     <header className="shrink-0 border-b border-neutral-200 bg-white pt-safe md:hidden">
@@ -83,6 +92,22 @@ export function MobileToolbar({
         {hasDoc && (
           <>
             <button
+              onClick={onUndo}
+              disabled={!canUndo}
+              aria-label="Undo"
+              className="flex h-11 w-9 items-center justify-center rounded-lg text-neutral-700 active:bg-neutral-100 disabled:opacity-30"
+            >
+              <Undo2 className="h-5 w-5" />
+            </button>
+            <button
+              onClick={onRedo}
+              disabled={!canRedo}
+              aria-label="Redo"
+              className="flex h-11 w-9 items-center justify-center rounded-lg text-neutral-700 active:bg-neutral-100 disabled:opacity-30"
+            >
+              <Redo2 className="h-5 w-5" />
+            </button>
+            <button
               onClick={onOpenPages}
               aria-label="Pages"
               className="flex h-11 w-11 items-center justify-center rounded-lg text-neutral-700 active:bg-neutral-100"
@@ -107,7 +132,7 @@ export function MobileToolbar({
       </div>
 
       {hasDoc && (
-        <nav className="grid grid-cols-4 border-t border-neutral-200">
+        <nav className="grid grid-cols-5 border-t border-neutral-200">
           {MODES.map(({ mode, label, Icon }) => {
             const active = editMode === mode;
             return (

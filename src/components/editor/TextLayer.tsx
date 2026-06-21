@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 import { multiplyMatrix } from "@/lib/pdf/coordinates";
+import { sampleRunColors, type PageSample } from "@/lib/pdf/sampleColor";
 import { textEditKey, type TextEdit } from "@/lib/pdf/types";
 import { cn } from "@/lib/utils";
 
@@ -14,7 +15,12 @@ interface DetectedText {
   transform: number[];
   /** Run width in PDF points. */
   width: number;
+  /** Original family was a serif face -> export/preview with a serif font. */
+  serif: boolean;
 }
+
+// Cap the off-screen sampling bitmap so colour detection stays cheap on big pages.
+const SAMPLE_MAX_SIDE = 1400;
 
 interface TextLayerProps {
   doc: PDFDocumentProxy;
@@ -56,6 +62,8 @@ export function TextLayer({
   onRemove,
 }: TextLayerProps) {
   const pageRef = useRef<PDFPageProxy | null>(null);
+  // Off-screen render of the page, used to sample real bg/text colours on commit.
+  const sampleRef = useRef<PageSample | null>(null);
   const [items, setItems] = useState<DetectedText[] | null>(null);
   const [editingKey, setEditingKey] = useState<string | null>(null);
 
@@ -71,10 +79,40 @@ export function TextLayer({
       const detected: DetectedText[] = [];
       content.items.forEach((item, idx) => {
         if ("str" in item && item.str.trim().length > 0) {
-          detected.push({ itemIndex: idx, str: item.str, transform: item.transform, width: item.width });
+          const family = (item.fontName && content.styles[item.fontName]?.fontFamily) || "";
+          detected.push({
+            itemIndex: idx,
+            str: item.str,
+            transform: item.transform,
+            width: item.width,
+            serif: /serif/i.test(family) && !/sans/i.test(family),
+          });
         }
       });
       setItems(detected);
+
+      // Rasterise the page once (capped) so commits can sample colours behind/under
+      // each run. Best-effort: if it fails, edits fall back to white/black.
+      try {
+        const base = page.getViewport({ scale: 1 });
+        const s = Math.min(2, SAMPLE_MAX_SIDE / Math.max(base.width, base.height));
+        const vp = page.getViewport({ scale: s });
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.ceil(vp.width);
+        canvas.height = Math.ceil(vp.height);
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        if (ctx) {
+          await page.render({ canvas, viewport: vp }).promise;
+          if (!cancelled) {
+            sampleRef.current = {
+              data: ctx.getImageData(0, 0, canvas.width, canvas.height),
+              transform: vp.transform,
+            };
+          }
+        }
+      } catch {
+        sampleRef.current = null;
+      }
     })();
     return () => {
       cancelled = true;
@@ -99,8 +137,13 @@ export function TextLayer({
                 minWidth: Math.max(edit.width * scale, fontPx * 0.4),
                 height: fontPx * 1.25,
                 fontSize: fontPx,
+                backgroundColor: edit.bgColor ?? "#ffffff",
+                color: edit.textColor ?? "#000000",
               }}
-              className="absolute box-content whitespace-nowrap bg-white px-0.5 font-sans leading-none text-black"
+              className={cn(
+                "absolute box-content whitespace-nowrap px-0.5 leading-none",
+                edit.serif ? "font-serif" : "font-sans",
+              )}
             >
               {edit.newText}
             </span>
@@ -137,6 +180,15 @@ export function TextLayer({
             onRemove(key);
             return;
           }
+          // Sample the page so the edit blends in (real bg colour + ink colour).
+          const colors = sampleRef.current
+            ? sampleRunColors(sampleRef.current, {
+                x: item.transform[4],
+                y: item.transform[5],
+                width: item.width,
+                fontSize: pdfFontSize,
+              })
+            : undefined;
           onCommit({
             pageId,
             itemIndex: item.itemIndex,
@@ -146,6 +198,9 @@ export function TextLayer({
             y: item.transform[5],
             fontSize: pdfFontSize,
             width: item.width,
+            bgColor: colors?.bg,
+            textColor: colors?.text,
+            serif: item.serif,
           });
         };
 
@@ -182,12 +237,15 @@ export function TextLayer({
               minWidth: widthPx,
               height: boxHeight,
               fontSize: fontPx,
+              backgroundColor: edit ? edit.bgColor ?? "#ffffff" : undefined,
+              color: edit ? edit.textColor ?? "#000000" : undefined,
             }}
             className={cn(
-              "absolute z-10 box-content cursor-text overflow-hidden whitespace-nowrap text-left font-sans leading-none text-black",
+              "absolute z-10 box-content cursor-text overflow-hidden whitespace-nowrap text-left leading-none",
+              edit?.serif ? "font-serif" : "font-sans",
               edit
-                ? "bg-white px-0.5 ring-1 ring-amber-400"
-                : "rounded-sm hover:bg-blue-400/20 hover:ring-1 hover:ring-blue-400",
+                ? "px-0.5 ring-1 ring-amber-400"
+                : "rounded-sm text-black hover:bg-blue-400/20 hover:ring-1 hover:ring-blue-400",
             )}
           >
             {edit?.newText ?? ""}

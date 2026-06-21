@@ -53,11 +53,12 @@ src/
       Toolbar.tsx             # desktop: upload, zoom, mode toggles, page indicator
       MobileToolbar.tsx       # touch: two-row toolbar, full-width mode switcher
       ExportMenu.tsx          # "Export ▾" dropdown: PDF / PNG / JPEG / text
-      ThumbnailSidebar.tsx    # pages: desktop rail + mobile drawer; reorder/delete/+blank
+      ThumbnailSidebar.tsx    # pages: desktop rail + mobile drawer; reorder/delete/insert-blank
       PdfViewer.tsx           # scrollable viewer; renders slot-by-slot from pageOrder
       PdfPageCanvas.tsx       # one page -> canvas, lazy (IntersectionObserver), HiDPI
-      TextLayer.tsx           # detect text runs; click to edit; WYSIWYG edit preview
+      TextLayer.tsx           # detect text runs; click to edit; samples bg/ink colour; WYSIWYG
       ImageLayer.tsx          # placed images: drag-move, free corner resize, delete
+      ObjectLayer.tsx         # "Object" mode: draw a box to lift an existing object
       AnnotationLayer.tsx     # pen / highlight / rect / ellipse + select/move/delete
       AnnotationToolbar.tsx   # annotation sub-toolbar (tool · colour · width · undo · clear)
   hooks/
@@ -67,6 +68,8 @@ src/
       pdfjs.ts                # browser-only lazy loader; wires the worker
       render.ts               # renderPageToCanvas() — DPR-aware, cancellable
       coordinates.ts          # *** DOM <-> PDF coordinate mapping (read this) ***
+      sampleColor.ts          # sample real bg/ink colour behind a text run (for blend-in edits)
+      lift.ts                 # rasterise a page region to a movable PNG + cover colour
       export.ts               # rebuild PDF from pageOrder + bake every edit (pdf-lib)
       convert.ts              # edited PDF -> PNG/JPEG (pdf.js + JSZip) and text extraction
       types.ts                # PageRef, TextEdit, ImageOverlay, Annotation, …
@@ -75,6 +78,8 @@ src/
     download.ts               # downloadBlob() / downloadBytes()
     utils.ts                  # cn()
   scripts/copy-pdf-worker.mjs # copies the worker into /public (offline, version-locked)
+  scripts/gen-assets.mjs      # one SVG logo -> icon/splash source PNGs (sharp), for @capacitor/assets
+  assets/                     # generated icon/splash sources (+ source/glyph.svg)
 ```
 
 ### pdf.js worker
@@ -114,16 +119,18 @@ the two coordinate systems never drift.
 - [x] **Step 1 — Rendering engine:** upload (button + drag/drop), multi-page canvas
       with smooth scroll, zoom (in/out/reset/fit-width), HiDPI-crisp output, lazy
       per-page rendering, clickable thumbnail navigation, active-page tracking.
-- [x] **Step 2 — Text editing:** "Edit text" mode overlays detected text runs
-      (`getTextContent`); click a run to edit inline (Enter saves, Esc cancels).
-      Committed edits render as a **WYSIWYG white-cover + new text in every mode**
-      (drawn from each edit's stored PDF-space geometry, so untouched pages cost
-      nothing) — the page already looks like the file you'll download. **Download**
-      bakes edits into a new PDF via pdf-lib, embedding a Unicode font (Noto Sans) so
-      Turkish/non-Latin-1 text exports correctly. Edits are keyed `pageId:itemIndex`
-      and reset on file change. _Limits: edits one detected run (≈word/line fragment)
-      at a time; export assumes black text on light background and does not reproduce
-      the original font face._
+- [x] **Step 2 — Text editing (colour/font-aware):** "Edit text" mode overlays
+      detected text runs (`getTextContent`); click a run to edit inline (Enter saves,
+      Esc cancels). On commit the page is sampled off-screen (`src/lib/pdf/sampleColor.ts`)
+      to capture the **real background colour behind the run** (so a blue panel stays
+      blue instead of a white box) and the **original ink colour** — both stored on the
+      edit and used in the WYSIWYG preview and the export. Serif vs. sans is detected
+      from the run's font family and the export embeds **two Unicode faces** (Noto Sans
+      + a serif), so a serif run stays serif. Committed edits render in **every mode**
+      from stored PDF-space geometry (untouched pages cost nothing). Edits keyed
+      `pageId:itemIndex`, reset on file change. _Limits: edits one detected run
+      (≈word/line fragment) at a time; matches family class + size + colour, not the
+      exact original typeface; bold/italic not reproduced._
 - [x] **Step 3 — Image placement:** "Image" mode + "Add" uploads a PNG/JPG, placed
       centred on the active page. Drag to move, **four corner handles for free
       (non-aspect-locked) resize** — the opposite corner stays anchored, so a square
@@ -138,9 +145,10 @@ the two coordinate systems never drift.
       remove a single drawing (no per-object handle / right-click on a phone).
       Export bakes them via `drawLine` / filled-rect-with-opacity / border-rect /
       `drawEllipse`.
-- [x] **Step 5 — Page management:** thumbnail rail supports drag-to-reorder, per-page
-      delete (with confirm hover-X), and append blank page. Pages carry a **stable
-      `id`** (`PageRef`), so every edit stays bound to its page across reordering.
+- [x] **Step 5 — Page management:** thumbnail rail supports reorder (▲/▼), per-page
+      delete, **insert a blank page at any position** (the `+` on each thumbnail drops a
+      blank directly below it; the bottom button appends), and append blank. Pages carry
+      a **stable `id`** (`PageRef`), so every edit stays bound to its page across reordering.
 - [x] **Step 6 — Unified export:** `exportPdf(bytes, { pageOrder, textEdits, images,
       annotations })` rebuilds the document from `pageOrder` (copying originals,
       inserting blanks) and bakes all edits, matched to pages by `pageId`. Verified
@@ -166,3 +174,23 @@ the two coordinate systems never drift.
       Filesystem + Share** plugins on native (write to cache → system share sheet →
       "Save to Files" / Drive / WhatsApp), falling back to the browser download on
       web.
+- [x] **Step 10 — Edit existing objects (lift):** content baked into a PDF's stream
+      (often nested in Form XObjects) can't be reliably moved/resized/deleted in place,
+      so "Object" mode instead **lifts** a region: draw a box around any existing object
+      and it's rasterised to a movable image (`src/lib/pdf/lift.ts`) while a solid cover
+      sampled from the surrounding colour is dropped underneath to hide the original.
+      The lifted copy lands selected in image mode — drag, free-resize, or delete it
+      like any placed image. _Trade-off: the lifted object becomes raster (not live
+      text/vector); clean removal depends on background colour detection._
+- [x] **Step 11 — Undo / redo:** a single snapshot history over all four edit state
+      pieces (page order, text, images, annotations) in `PdfEditor`. Every user edit —
+      including multi-field atomic ones like delete-page — is one history entry; toolbar
+      buttons and **Ctrl/Cmd+Z / Ctrl+Shift+Z (or Ctrl+Y)** replay snapshots. Object
+      URLs are kept alive until document switch so an undone image delete still renders.
+      A fresh document starts a new baseline (`epoch`).
+- [x] **Step 12 — Brand, app icon & splash:** one SVG logo mark (dog-eared page +
+      editing pencil) drives every asset via `scripts/gen-assets.mjs` (sharp) →
+      `@capacitor/assets generate`, producing all Android launcher densities (adaptive
+      icon: amber pencil on blue) and a launch **splash** (logo + "PDF Editor", with a
+      dark-mode variant). The splash shows on cold start via the `Theme.SplashScreen`
+      launch theme and clears once the WebView paints — no web changes.

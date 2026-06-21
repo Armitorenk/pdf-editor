@@ -2,12 +2,15 @@
 
 import {
   ChevronLeft,
+  Crop,
   FileText,
   Image as ImageIcon,
   ImagePlus,
   Maximize,
   Pencil,
+  Redo2,
   Type,
+  Undo2,
   Upload,
   ZoomIn,
   ZoomOut,
@@ -36,9 +39,14 @@ interface ToolbarProps {
   onToggleTextMode: () => void;
   onToggleImageMode: () => void;
   onToggleAnnotateMode: () => void;
+  onToggleObjectMode: () => void;
   onAddImage: () => void;
   onExport: (format: ExportFormat) => void;
   onHome: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
 }
 
 /** Top application bar: branding, file info, upload, and zoom controls. */
@@ -59,9 +67,14 @@ export function Toolbar({
   onToggleTextMode,
   onToggleImageMode,
   onToggleAnnotateMode,
+  onToggleObjectMode,
   onAddImage,
   onExport,
   onHome,
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
 }: ToolbarProps) {
   return (
     <header className="hidden h-14 shrink-0 items-center gap-3 border-b border-neutral-200 bg-white px-3 md:flex">
@@ -115,6 +128,15 @@ export function Toolbar({
 
             <div className="mx-1 h-6 w-px bg-neutral-200" />
 
+            <Button variant="ghost" size="icon" onClick={onUndo} disabled={!canUndo} aria-label="Undo" title="Undo (Ctrl+Z)">
+              <Undo2 className="h-4 w-4" />
+            </Button>
+            <Button variant="ghost" size="icon" onClick={onRedo} disabled={!canRedo} aria-label="Redo" title="Redo (Ctrl+Shift+Z)">
+              <Redo2 className="h-4 w-4" />
+            </Button>
+
+            <div className="mx-1 h-6 w-px bg-neutral-200" />
+
             <Button
               variant={editMode === "text" ? "default" : "outline"}
               size="sm"
@@ -158,6 +180,17 @@ export function Toolbar({
             >
               <Pencil className="h-4 w-4" />
               Annotate
+            </Button>
+
+            <Button
+              variant={editMode === "object" ? "default" : "outline"}
+              size="sm"
+              onClick={onToggleObjectMode}
+              className={cn(editMode === "object" && "bg-blue-600 hover:bg-blue-500")}
+              aria-pressed={editMode === "object"}
+            >
+              <Crop className="h-4 w-4" />
+              Object
             </Button>
 
             <ExportMenu isExporting={isExporting} onExport={onExport} />

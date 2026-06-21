@@ -16,6 +16,7 @@ import { PdfPageCanvas } from "./PdfPageCanvas";
 import { TextLayer } from "./TextLayer";
 import { ImageLayer } from "./ImageLayer";
 import { AnnotationLayer } from "./AnnotationLayer";
+import { ObjectLayer } from "./ObjectLayer";
 
 /** Imperative API the parent uses to drive the scroll position. */
 export interface ViewerApi {
@@ -47,6 +48,9 @@ interface PdfViewerProps {
   onSelectAnnotation: (id: string | null) => void;
   onMoveAnnotation: (id: string, dx: number, dy: number) => void;
   onDeleteAnnotation: (id: string) => void;
+
+  /** Lift an existing object: a drawn box (DOM px) on an original page. */
+  onLiftObject: (pageId: string, pageNumber: number, pageHeight: number, domRect: Rect) => void;
 
   apiRef?: React.RefObject<ViewerApi | null>;
   onActivePageChange?: (slotIndex: number) => void;
@@ -185,6 +189,15 @@ export function PdfViewer(props: PdfViewerProps) {
                   edits={props.textEdits}
                   onCommit={props.onCommitTextEdit}
                   onRemove={props.onRemoveTextEdit}
+                />
+              )}
+
+              {ref.kind === "original" && (
+                <ObjectLayer
+                  active={editMode === "object"}
+                  onLift={(domRect) =>
+                    props.onLiftObject(ref.id, ref.originalIndex + 1, size.height, domRect)
+                  }
                 />
               )}
             </div>

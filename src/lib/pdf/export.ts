@@ -35,15 +35,26 @@ export async function exportPdf(
   const needsOriginal = pageOrder.some((p) => p.kind === "original");
   const src = needsOriginal ? await PDFDocument.load(originalBytes.slice()) : null;
 
-  let font: PDFFont | null = null;
+  // Two embedded Unicode faces so a serif run exports serif and a sans run sans.
+  // Both fall back to Helvetica if the bundled TTFs can't be fetched/embedded.
+  let sansFont: PDFFont | null = null;
+  let serifFont: PDFFont | null = null;
   if (textEdits.length > 0) {
-    try {
-      out.registerFontkit(fontkitMod.default ?? fontkitMod);
-      const res = await fetch("/fonts/editor-font.ttf");
+    out.registerFontkit(fontkitMod.default ?? fontkitMod);
+    const embed = async (url: string) => {
+      const res = await fetch(url);
       if (!res.ok) throw new Error(`font fetch failed: ${res.status}`);
-      font = await out.embedFont(await res.arrayBuffer(), { subset: true });
+      return out.embedFont(await res.arrayBuffer(), { subset: true });
+    };
+    try {
+      sansFont = await embed("/fonts/editor-font.ttf");
     } catch {
-      font = await out.embedFont(StandardFonts.Helvetica);
+      sansFont = await out.embedFont(StandardFonts.Helvetica);
+    }
+    try {
+      serifFont = textEdits.some((t) => t.serif) ? await embed("/fonts/editor-serif.ttf") : sansFont;
+    } catch {
+      serifFont = await out.embedFont(StandardFonts.TimesRoman);
     }
   }
 
@@ -56,8 +67,9 @@ export async function exportPdf(
       page = out.addPage(ref.kind === "blank" ? [ref.width, ref.height] : A4);
     }
 
-    if (font) {
+    if (sansFont && serifFont) {
       for (const edit of textEdits.filter((t) => t.pageId === ref.id)) {
+        const font = edit.serif ? serifFont : sansFont;
         try {
           const newWidth = font.widthOfTextAtSize(edit.newText, edit.fontSize);
           page.drawRectangle({
@@ -65,14 +77,14 @@ export async function exportPdf(
             y: edit.y - edit.fontSize * 0.25,
             width: Math.max(edit.width, newWidth),
             height: edit.fontSize * 1.2,
-            color: rgb(1, 1, 1),
+            color: hexToRgb(edit.bgColor ?? "#ffffff", rgb),
           });
           page.drawText(edit.newText, {
             x: edit.x,
             y: edit.y,
             size: edit.fontSize,
             font,
-            color: rgb(0, 0, 0),
+            color: hexToRgb(edit.textColor ?? "#000000", rgb),
           });
         } catch {
           // Character not encodable by the fallback font — leave the original.

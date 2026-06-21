@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { saveFile } from "@/lib/save";
 import { exportPdf } from "@/lib/pdf/export";
 import { extractText, imagesToZip, pdfToImages, type ExportFormat } from "@/lib/pdf/convert";
+import { liftRegion, solidColorPng } from "@/lib/pdf/lift";
 import {
   deleteProject,
   listProjects,
@@ -14,7 +15,7 @@ import {
   saveProject,
   type ProjectMeta,
 } from "@/lib/projects";
-import type { Rect } from "@/lib/pdf/coordinates";
+import { domRectToPdfRect, type Rect } from "@/lib/pdf/coordinates";
 import {
   textEditKey,
   type Annotation,
@@ -39,6 +40,14 @@ const DEFAULT_SCALE = 1.2;
 const A4: PageSize = { width: 595.28, height: 841.89 };
 
 const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
+
+/** The full editable state, snapshotted for undo/redo. */
+interface EditSnapshot {
+  pageOrder: PageRef[];
+  textEdits: Record<string, TextEdit>;
+  imageOverlays: ImageOverlay[];
+  annotations: Annotation[];
+}
 
 /** Read an image's natural pixel dimensions from an object URL. */
 function loadImageSize(src: string): Promise<{ w: number; h: number }> {
@@ -86,6 +95,15 @@ export function PdfEditor() {
   const imageInputRef = useRef<HTMLInputElement>(null);
   const mainRef = useRef<HTMLDivElement>(null);
   const viewerApiRef = useRef<ViewerApi | null>(null);
+
+  // Undo/redo history (see the Undo / redo section below for how these are used).
+  const pastRef = useRef<EditSnapshot[]>([]);
+  const futureRef = useRef<EditSnapshot[]>([]);
+  const presentRef = useRef<EditSnapshot | null>(null);
+  const applyingRef = useRef(false); // true while a setter batch comes from undo/redo
+  const epochRef = useRef(0); // bumped per document so each load starts a fresh baseline
+  const recordedEpochRef = useRef(-1);
+  const [histVersion, setHistVersion] = useState(0); // forces re-render for can-undo/redo
   // Holds saved state to apply once a reopened project's pdf.js doc has loaded.
   const restoreRef = useRef<{
     pageOrder: PageRef[];
@@ -197,6 +215,12 @@ export function PdfEditor() {
     setSelectedImageId(null);
     setAnnotations([]);
     setSelectedAnnotationId(null);
+    // New document -> fresh undo baseline (object URLs are only revoked here, never
+    // on individual deletes, so an undone delete still has a live image src).
+    epochRef.current += 1;
+    pastRef.current = [];
+    futureRef.current = [];
+    presentRef.current = null;
   }, []);
 
   const loadFile = useCallback(
@@ -321,13 +345,54 @@ export function PdfEditor() {
   }, []);
 
   const deleteImage = useCallback((id: string) => {
-    setImageOverlays((prev) => {
-      const target = prev.find((im) => im.id === id);
-      if (target) URL.revokeObjectURL(target.src);
-      return prev.filter((im) => im.id !== id);
-    });
+    // Note: don't revoke the object URL here — an undo could restore this image and
+    // would need a live src. URLs are revoked only on document switch (reset).
+    setImageOverlays((prev) => prev.filter((im) => im.id !== id));
     setSelectedImageId((cur) => (cur === id ? null : cur));
   }, []);
+
+  // --- Lift existing object -------------------------------------------------
+  // Rasterise the boxed region of an ORIGINAL page into a movable image, and place
+  // a solid cover (sampled page colour) underneath at the same spot so the original
+  // appears "removed". Both overlays are added together -> one undo step. The user
+  // lands in image mode with the lifted copy selected, ready to move/resize/delete.
+  const liftObject = useCallback(
+    async (pageId: string, pageNumber: number, pageHeight: number, domRect: Rect) => {
+      if (!doc) return;
+      try {
+        const page = await doc.getPage(pageNumber);
+        const pdfRect = domRectToPdfRect(domRect, pageHeight, scale);
+        const { imageBytes, bgColor } = await liftRegion(page, pdfRect, pageHeight);
+        const coverBytes = await solidColorPng(bgColor);
+        const aspect = pdfRect.width / pdfRect.height;
+        const geom = { pageId, x: pdfRect.x, y: pdfRect.y, width: pdfRect.width, height: pdfRect.height };
+        const cover: ImageOverlay = {
+          id: crypto.randomUUID(),
+          ...geom,
+          src: URL.createObjectURL(new Blob([coverBytes as BlobPart], { type: "image/png" })),
+          bytes: coverBytes,
+          format: "png",
+          aspect,
+        };
+        const liftedId = crypto.randomUUID();
+        const lifted: ImageOverlay = {
+          id: liftedId,
+          ...geom,
+          src: URL.createObjectURL(new Blob([imageBytes as BlobPart], { type: "image/png" })),
+          bytes: imageBytes,
+          format: "png",
+          aspect,
+        };
+        setImageOverlays((prev) => [...prev, cover, lifted]); // cover under lifted
+        setEditMode("image");
+        setSelectedImageId(liftedId);
+      } catch (err) {
+        console.error("Lift failed:", err);
+        alert("Could not lift that region. See the console for details.");
+      }
+    },
+    [doc, scale],
+  );
 
   // --- Annotations ----------------------------------------------------------
   const addAnnotation = useCallback((ann: Annotation) => setAnnotations((prev) => [...prev, ann]), []);
@@ -372,23 +437,112 @@ export function PdfEditor() {
       setTextEdits((prev) =>
         Object.fromEntries(Object.entries(prev).filter(([, v]) => v.pageId !== ref.id)),
       );
-      setImageOverlays((prev) => {
-        prev.filter((im) => im.pageId === ref.id).forEach((im) => URL.revokeObjectURL(im.src));
-        return prev.filter((im) => im.pageId !== ref.id);
-      });
+      // Keep object URLs alive (see deleteImage) so deleting a page is undoable.
+      setImageOverlays((prev) => prev.filter((im) => im.pageId !== ref.id));
       setAnnotations((prev) => prev.filter((a) => a.pageId !== ref.id));
       setActivePage((p) => Math.min(p, pageOrder.length - 2));
     },
     [pageOrder],
   );
 
-  const addBlankPage = useCallback(() => {
-    const size = firstPageSize ?? A4;
-    setPageOrder((prev) => [
-      ...prev,
-      { id: `blank:${crypto.randomUUID()}`, kind: "blank", width: size.width, height: size.height },
-    ]);
-  }, [firstPageSize]);
+  /** Insert a blank page at `atIndex` (default: append at the end). */
+  const addBlankPage = useCallback(
+    (atIndex?: number) => {
+      const size = firstPageSize ?? A4;
+      const blank: PageRef = {
+        id: `blank:${crypto.randomUUID()}`,
+        kind: "blank",
+        width: size.width,
+        height: size.height,
+      };
+      setPageOrder((prev) => {
+        const at = atIndex == null ? prev.length : Math.max(0, Math.min(atIndex, prev.length));
+        const next = [...prev];
+        next.splice(at, 0, blank);
+        return next;
+      });
+    },
+    [firstPageSize],
+  );
+
+  // --- Undo / redo ----------------------------------------------------------
+  // A single snapshot history over all four edit state pieces. Every user edit
+  // (including multi-field ones like deletePage, which batch into one render) lands
+  // as one history entry; undo/redo replays a snapshot back into the four setters.
+  // (History refs are declared up top so resetEditorState can clear them.)
+  const applySnapshot = useCallback((s: EditSnapshot) => {
+    applyingRef.current = true;
+    setPageOrder(s.pageOrder);
+    setTextEdits(s.textEdits);
+    setImageOverlays(s.imageOverlays);
+    setAnnotations(s.annotations);
+  }, []);
+
+  useEffect(() => {
+    if (!(status === "ready" && doc && pageOrder.length > 0)) return;
+    const next: EditSnapshot = { pageOrder, textEdits, imageOverlays, annotations };
+    if (applyingRef.current) {
+      applyingRef.current = false;
+      presentRef.current = next;
+      return;
+    }
+    if (recordedEpochRef.current !== epochRef.current) {
+      // First stable snapshot of a freshly loaded/opened document: set the baseline,
+      // no undo step before it.
+      recordedEpochRef.current = epochRef.current;
+      presentRef.current = next;
+      pastRef.current = [];
+      futureRef.current = [];
+      setHistVersion((v) => v + 1);
+      return;
+    }
+    if (presentRef.current) pastRef.current.push(presentRef.current);
+    futureRef.current = [];
+    presentRef.current = next;
+    setHistVersion((v) => v + 1);
+  }, [status, doc, pageOrder, textEdits, imageOverlays, annotations]);
+
+  const undo = useCallback(() => {
+    if (pastRef.current.length === 0) return;
+    const prev = pastRef.current.pop()!;
+    if (presentRef.current) futureRef.current.push(presentRef.current);
+    presentRef.current = prev;
+    applySnapshot(prev);
+    setHistVersion((v) => v + 1);
+  }, [applySnapshot]);
+
+  const redo = useCallback(() => {
+    if (futureRef.current.length === 0) return;
+    const nxt = futureRef.current.pop()!;
+    if (presentRef.current) pastRef.current.push(presentRef.current);
+    presentRef.current = nxt;
+    applySnapshot(nxt);
+    setHistVersion((v) => v + 1);
+  }, [applySnapshot]);
+
+  void histVersion; // referenced so canUndo/canRedo recompute each change
+  const canUndo = pastRef.current.length > 0;
+  const canRedo = futureRef.current.length > 0;
+
+  // Keyboard: Ctrl/Cmd+Z = undo, Ctrl/Cmd+Shift+Z or Ctrl+Y = redo. Ignored while
+  // typing into a field (e.g. the inline text-edit input).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      const key = e.key.toLowerCase();
+      if (key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      } else if ((key === "z" && e.shiftKey) || key === "y") {
+        e.preventDefault();
+        redo();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo, redo]);
 
   // --- Export / convert -----------------------------------------------------
   // Every format starts from the same edited PDF, so image/PDF outputs all reflect
@@ -499,9 +653,14 @@ export function PdfEditor() {
         onToggleTextMode={() => setMode(editMode === "text" ? "view" : "text")}
         onToggleImageMode={() => setMode(editMode === "image" ? "view" : "image")}
         onToggleAnnotateMode={() => setMode(editMode === "annotate" ? "view" : "annotate")}
+        onToggleObjectMode={() => setMode(editMode === "object" ? "view" : "object")}
         onAddImage={openImagePicker}
         onExport={handleExport}
         onHome={closeProject}
+        canUndo={canUndo}
+        canRedo={canRedo}
+        onUndo={undo}
+        onRedo={redo}
       />
 
       <MobileToolbar
@@ -517,6 +676,10 @@ export function PdfEditor() {
         onSetMode={setMode}
         onExport={handleExport}
         onHome={closeProject}
+        canUndo={canUndo}
+        canRedo={canRedo}
+        onUndo={undo}
+        onRedo={redo}
       />
 
       {editMode === "annotate" && ready && (
@@ -580,6 +743,7 @@ export function PdfEditor() {
               onSelectAnnotation={setSelectedAnnotationId}
               onMoveAnnotation={moveAnnotation}
               onDeleteAnnotation={deleteAnnotation}
+              onLiftObject={liftObject}
               apiRef={viewerApiRef}
               onActivePageChange={setActivePage}
             />
@@ -605,8 +769,17 @@ export function PdfEditor() {
               {editMode === "text"
                 ? "Click any text to edit · Enter to save · Esc to cancel"
                 : editMode === "image"
-                  ? "Add an image, then drag to move · drag the corner to resize · trash to delete"
-                  : "Draw on the page · pick a tool, colour and width above"}
+                  ? "Add an image, then drag to move · drag a corner to resize · trash to delete"
+                  : editMode === "object"
+                    ? "Draw a box around an existing object to lift it — then move, resize or delete it"
+                    : "Draw on the page · pick a tool, colour and width above"}
+            </div>
+          )}
+
+          {/* Mobile object-mode hint (this mode is the least obvious by touch). */}
+          {editMode === "object" && ready && (
+            <div className="pointer-events-none absolute left-1/2 top-3 z-30 -translate-x-1/2 rounded-full bg-neutral-900/90 px-4 py-1.5 text-center text-xs text-white shadow-lg md:hidden">
+              Draw a box around an object to lift it
             </div>
           )}
 

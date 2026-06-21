@@ -16,7 +16,8 @@ interface ThumbnailSidebarProps {
   onSelectPage: (slotIndex: number) => void;
   onReorder: (from: number, to: number) => void;
   onDeletePage: (slotIndex: number) => void;
-  onAddBlankPage: () => void;
+  /** Insert a blank page at `atIndex` (omit to append at the end). */
+  onAddBlankPage: (atIndex?: number) => void;
   /** Mobile drawer open state (ignored by the desktop rail). */
   mobileOpen: boolean;
   onCloseMobile: () => void;
@@ -55,13 +56,14 @@ export function ThumbnailSidebar({
               onMoveUp={() => onReorder(i, i - 1)}
               onMoveDown={() => onReorder(i, i + 1)}
               onDelete={() => onDeletePage(i)}
+              onInsertBlankBelow={() => onAddBlankPage(i + 1)}
             />
           </li>
         ))}
       </ul>
 
       <button
-        onClick={onAddBlankPage}
+        onClick={() => onAddBlankPage()}
         className="mt-3 flex items-center justify-center gap-1.5 rounded-md border border-dashed border-neutral-300 py-3 text-sm text-neutral-600 active:bg-white hover:border-neutral-400 hover:bg-white"
       >
         <Plus className="h-4 w-4" />
@@ -126,6 +128,7 @@ interface ThumbnailItemProps {
   onMoveUp: () => void;
   onMoveDown: () => void;
   onDelete: () => void;
+  onInsertBlankBelow: () => void;
 }
 
 function ThumbnailItem({
@@ -140,6 +143,7 @@ function ThumbnailItem({
   onMoveUp,
   onMoveDown,
   onDelete,
+  onInsertBlankBelow,
 }: ThumbnailItemProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -215,6 +219,9 @@ function ThumbnailItem({
           </IconBtn>
           <IconBtn label="Move down" disabled={isLast} onClick={onMoveDown}>
             <ChevronDown className="h-4 w-4" />
+          </IconBtn>
+          <IconBtn label="Insert blank page below" onClick={onInsertBlankBelow}>
+            <Plus className="h-4 w-4" />
           </IconBtn>
           <IconBtn label="Delete page" disabled={!canDelete} danger onClick={onDelete}>
             <Trash2 className="h-4 w-4" />
