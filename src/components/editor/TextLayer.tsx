@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 import { multiplyMatrix } from "@/lib/pdf/coordinates";
-import { sampleRunColors, runRelStem, isBold, median, type PageSample } from "@/lib/pdf/sampleColor";
+import { sampleRunColors, runRelStem, isBold, percentile, type PageSample } from "@/lib/pdf/sampleColor";
 import { textEditKey, type TextEdit } from "@/lib/pdf/types";
 import { cn } from "@/lib/utils";
 
@@ -64,7 +64,7 @@ export function TextLayer({
   const pageRef = useRef<PDFPageProxy | null>(null);
   // Off-screen render of the page, used to sample real bg/text colours on commit.
   const sampleRef = useRef<PageSample | null>(null);
-  // Median relative stem width of this page's runs = the "regular" baseline that
+  // The page's regular-body stem width (low percentile of its runs) = the baseline
   // bold detection compares against (so a heading reads bold but body text doesn't).
   const pageStemRef = useRef<number | null>(null);
   const [items, setItems] = useState<DetectedText[] | null>(null);
@@ -121,7 +121,8 @@ export function TextLayer({
               if (rs != null) stems.push(rs);
               if (stems.length >= 120) break;
             }
-            pageStemRef.current = median(stems);
+            // 30th percentile ≈ the regular-body stem (robust to bold/mono runs).
+            pageStemRef.current = percentile(stems, 0.3);
           }
         }
       } catch {

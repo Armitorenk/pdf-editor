@@ -163,3 +163,15 @@ export function median(values: number[]): number | null {
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.floor(sorted.length / 2)];
 }
+
+/**
+ * The p-quantile (0..1) of a numeric list, or null when empty. Used to derive the
+ * page's *regular body* stem from the low end of the distribution — robust even when
+ * the page is full of bold headings or thick monospace, which would inflate a median.
+ */
+export function percentile(values: number[], p: number): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const i = Math.min(sorted.length - 1, Math.max(0, Math.round((sorted.length - 1) * p)));
+  return sorted[i];
+}

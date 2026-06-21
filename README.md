@@ -128,15 +128,18 @@ the two coordinate systems never drift.
       average, which would be dragged toward the background by anti-aliased edges and
       come out washed-out grey. **Boldness is detected** too, by comparing the run's
       stroke thickness (median ink run-length ÷ font size) to the page's own body
-      baseline (median across its runs) — a heading measures ~2× the body, so this
-      cleanly tells a bold heading from regular text without an unreliable absolute
-      threshold. It's re-applied in the preview via `font-weight` and on export via a
-      faux-bold offset double-draw. Serif vs. sans is
-      detected from the run's font family and the export embeds **two Unicode faces**
-      (Noto Sans + a serif). Committed edits render in **every mode** from stored
-      PDF-space geometry (untouched pages cost nothing). Edits keyed `pageId:itemIndex`,
-      reset on file change. _Limits: one detected run (≈word/line fragment) at a time;
-      matches family class + size + colour + weight, not the exact original typeface._
+      baseline (the **low percentile** of its runs' stems — robust even when the page
+      is full of bold/monospace, which would inflate a median) — a heading measures
+      ~2× the body, so this cleanly tells a bold heading from regular text without an
+      unreliable absolute threshold. Bold is re-applied via a **real embedded bold
+      face** on export (and `font-weight` in the preview). Serif vs. sans is detected
+      from the run's font family; the export embeds **Source Sans 3 (regular + bold)** —
+      a close match to the humanist sans many documents use — plus a serif. Committed
+      edits render in **every mode** from stored PDF-space geometry (untouched pages
+      cost nothing). Edits keyed `pageId:itemIndex`, reset on file change. _Limit: the
+      exact original typeface can't be reproduced — PDFs embed only font **subsets**
+      (verified: bare CFF/Type1, not reusable), so new characters are drawn in the
+      bundled close-match face (matched for size, colour, and weight)._
 - [x] **Step 3 — Image placement:** "Image" mode + "Add" uploads a PNG/JPG, placed
       centred on the active page. Drag to move, **four corner handles for free
       (non-aspect-locked) resize** — the opposite corner stays anchored, so a square

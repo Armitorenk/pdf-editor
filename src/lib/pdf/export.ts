@@ -35,9 +35,11 @@ export async function exportPdf(
   const needsOriginal = pageOrder.some((p) => p.kind === "original");
   const src = needsOriginal ? await PDFDocument.load(originalBytes.slice()) : null;
 
-  // Two embedded Unicode faces so a serif run exports serif and a sans run sans.
-  // Both fall back to Helvetica if the bundled TTFs can't be fetched/embedded.
+  // Embedded Unicode faces: sans regular + sans bold (Source Sans 3, a close match
+  // to the humanist sans used by many documents) and a serif. Each falls back to a
+  // standard font if its TTF can't be fetched/embedded.
   let sansFont: PDFFont | null = null;
+  let sansBoldFont: PDFFont | null = null;
   let serifFont: PDFFont | null = null;
   if (textEdits.length > 0) {
     out.registerFontkit(fontkitMod.default ?? fontkitMod);
@@ -47,9 +49,16 @@ export async function exportPdf(
       return out.embedFont(await res.arrayBuffer(), { subset: true });
     };
     try {
-      sansFont = await embed("/fonts/editor-font.ttf");
+      sansFont = await embed("/fonts/editor-sans.ttf");
     } catch {
       sansFont = await out.embedFont(StandardFonts.Helvetica);
+    }
+    try {
+      sansBoldFont = textEdits.some((t) => t.bold && !t.serif)
+        ? await embed("/fonts/editor-sans-bold.ttf")
+        : sansFont;
+    } catch {
+      sansBoldFont = await out.embedFont(StandardFonts.HelveticaBold);
     }
     try {
       serifFont = textEdits.some((t) => t.serif) ? await embed("/fonts/editor-serif.ttf") : sansFont;
@@ -67,9 +76,12 @@ export async function exportPdf(
       page = out.addPage(ref.kind === "blank" ? [ref.width, ref.height] : A4);
     }
 
-    if (sansFont && serifFont) {
+    if (sansFont && sansBoldFont && serifFont) {
       for (const edit of textEdits.filter((t) => t.pageId === ref.id)) {
-        const font = edit.serif ? serifFont : sansFont;
+        // Pick the closest face. Sans bold uses a real bold font; serif bold has no
+        // embedded bold face, so it's faux-bolded (offset re-draw) below.
+        const font = edit.serif ? serifFont : edit.bold ? sansBoldFont : sansFont;
+        const fauxBold = edit.bold && edit.serif;
         try {
           const newWidth = font.widthOfTextAtSize(edit.newText, edit.fontSize);
           page.drawRectangle({
@@ -89,9 +101,7 @@ export async function exportPdf(
               color,
             });
           drawAt(0, 0);
-          if (edit.bold) {
-            // No bold font embedded — fake weight by re-drawing with tiny offsets
-            // so the strokes thicken (a long-standing PDF faux-bold trick).
+          if (fauxBold) {
             const d = edit.fontSize * 0.03;
             drawAt(d, 0);
             drawAt(0, d);
