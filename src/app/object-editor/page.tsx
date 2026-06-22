@@ -6,13 +6,17 @@
 
 import { useEffect, useState, type ChangeEvent } from "react";
 import Link from "next/link";
+import { Download } from "lucide-react";
 import { Capacitor } from "@capacitor/core";
 import { ObjectCanvas } from "@/components/object/ObjectCanvas";
+import { PdfEngine } from "@/lib/object/pdfEngine";
+import { saveFile } from "@/lib/save";
 
 export default function ObjectEditorPage() {
   const [native, setNative] = useState(false);
   const [bytes, setBytes] = useState<Uint8Array | null>(null);
   const [name, setName] = useState("");
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => setNative(Capacitor.isNativePlatform()), []);
 
@@ -23,17 +27,46 @@ export default function ObjectEditorPage() {
     setBytes(new Uint8Array(await file.arrayBuffer()));
   }
 
+  async function onSave() {
+    setSaving(true);
+    try {
+      const { data } = await PdfEngine.saveDocument();
+      const bin = atob(data);
+      const arr = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      const blob = new Blob([arr], { type: "application/pdf" });
+      const outName = (name.replace(/\.pdf$/i, "") || "duzenlenmis") + "-edited.pdf";
+      await saveFile(outName, blob);
+    } catch (e) {
+      alert("Kaydetme hatası: " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <main className="flex h-dvh flex-col pt-safe">
       <header className="flex items-center justify-between gap-2 border-b border-neutral-200 px-3 py-2">
         <Link href="/" className="text-sm text-blue-600">
           ← Geri
         </Link>
-        <span className="truncate text-sm font-medium">{name || "Nesne Düzenleyici (WIP)"}</span>
-        <label className="cursor-pointer whitespace-nowrap text-sm text-blue-600">
-          PDF aç
-          <input type="file" accept="application/pdf" className="hidden" onChange={onPick} />
-        </label>
+        <span className="min-w-0 flex-1 truncate text-center text-sm font-medium">{name || "Nesne Düzenleyici (WIP)"}</span>
+        <div className="flex items-center gap-3">
+          {bytes && (
+            <button
+              className="flex items-center gap-1 whitespace-nowrap text-sm text-blue-600 disabled:opacity-40"
+              onClick={onSave}
+              disabled={saving}
+            >
+              <Download size={16} />
+              {saving ? "…" : "Kaydet"}
+            </button>
+          )}
+          <label className="cursor-pointer whitespace-nowrap text-sm text-blue-600">
+            PDF aç
+            <input type="file" accept="application/pdf" className="hidden" onChange={onPick} />
+          </label>
+        </div>
       </header>
 
       {!native && (

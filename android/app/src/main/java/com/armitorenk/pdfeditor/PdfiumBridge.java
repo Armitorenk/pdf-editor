@@ -46,6 +46,19 @@ final class PdfiumBridge {
     /** Free a loaded page. */
     static native void nativeClosePage(long page);
 
+    // --- editing ops (page + object by index; regenerate content; persist into the document) ---
+    /** Pre-multiply the object's matrix by [a,b,c,d,e,f] (move/scale/rotate). */
+    static native boolean nativeTransformObject(long handle, int pageIndex, int objIndex,
+            double a, double b, double c, double d, double e, double f);
+    /** Set the object's fill colour (0–255). */
+    static native boolean nativeSetFillColor(long handle, int pageIndex, int objIndex, int r, int g, int b, int a);
+    /** Replace a text object's string (kept in the object's existing font). */
+    static native boolean nativeSetText(long handle, int pageIndex, int objIndex, String text);
+    /** Remove the object from the page. */
+    static native boolean nativeDeleteObject(long handle, int pageIndex, int objIndex);
+    /** Serialise the (edited) document to PDF bytes. */
+    static native byte[] nativeSaveDocument(long handle);
+
     /** Close a document handle and free its backing bytes. */
     static native void nativeCloseDocument(long handle);
 }

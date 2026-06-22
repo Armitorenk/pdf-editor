@@ -180,4 +180,100 @@ public class PdfEnginePlugin extends Plugin {
         }
         call.resolve();
     }
+
+    /** Apply an affine transform [a,b,c,d,e,f] to an object (move/scale/rotate). */
+    @PluginMethod
+    public void transformObject(PluginCall call) {
+        Integer page = call.getInt("page");
+        Integer index = call.getInt("index");
+        if (page == null || index == null) {
+            call.reject("transformObject: missing page/index");
+            return;
+        }
+        double a = call.getDouble("a", 1.0), b = call.getDouble("b", 0.0), c = call.getDouble("c", 0.0);
+        double d = call.getDouble("d", 1.0), e = call.getDouble("e", 0.0), f = call.getDouble("f", 0.0);
+        synchronized (this) {
+            if (docHandle == 0) { call.reject("transformObject: no open document"); return; }
+            if (PdfiumBridge.nativeTransformObject(docHandle, page, index, a, b, c, d, e, f)) call.resolve();
+            else call.reject("transformObject: failed");
+        }
+    }
+
+    /** Set an object's fill colour from a "#rrggbb" string. */
+    @PluginMethod
+    public void setObjectColor(PluginCall call) {
+        Integer page = call.getInt("page");
+        Integer index = call.getInt("index");
+        String hex = call.getString("color");
+        if (page == null || index == null || hex == null) {
+            call.reject("setObjectColor: missing page/index/color");
+            return;
+        }
+        int[] rgb = parseHex(hex);
+        synchronized (this) {
+            if (docHandle == 0) { call.reject("setObjectColor: no open document"); return; }
+            if (PdfiumBridge.nativeSetFillColor(docHandle, page, index, rgb[0], rgb[1], rgb[2], 255)) call.resolve();
+            else call.reject("setObjectColor: failed");
+        }
+    }
+
+    /** Replace a text object's string (kept in its existing font; limited by the font's glyphs). */
+    @PluginMethod
+    public void setObjectText(PluginCall call) {
+        Integer page = call.getInt("page");
+        Integer index = call.getInt("index");
+        String text = call.getString("text");
+        if (page == null || index == null || text == null) {
+            call.reject("setObjectText: missing page/index/text");
+            return;
+        }
+        synchronized (this) {
+            if (docHandle == 0) { call.reject("setObjectText: no open document"); return; }
+            if (PdfiumBridge.nativeSetText(docHandle, page, index, text)) call.resolve();
+            else call.reject("setObjectText: failed (font may not cover the new characters)");
+        }
+    }
+
+    /** Delete an object from a page. Object indices shift afterwards — re-list on the JS side. */
+    @PluginMethod
+    public void deleteObject(PluginCall call) {
+        Integer page = call.getInt("page");
+        Integer index = call.getInt("index");
+        if (page == null || index == null) {
+            call.reject("deleteObject: missing page/index");
+            return;
+        }
+        synchronized (this) {
+            if (docHandle == 0) { call.reject("deleteObject: no open document"); return; }
+            if (PdfiumBridge.nativeDeleteObject(docHandle, page, index)) call.resolve();
+            else call.reject("deleteObject: failed");
+        }
+    }
+
+    /** Serialise the edited document to base64 PDF bytes. */
+    @PluginMethod
+    public void saveDocument(PluginCall call) {
+        synchronized (this) {
+            if (docHandle == 0) { call.reject("saveDocument: no open document"); return; }
+            byte[] bytes = PdfiumBridge.nativeSaveDocument(docHandle);
+            if (bytes == null) { call.reject("saveDocument: failed"); return; }
+            JSObject ret = new JSObject();
+            ret.put("data", Base64.encodeToString(bytes, Base64.NO_WRAP));
+            call.resolve(ret);
+        }
+    }
+
+    /** Parse "#rrggbb" (or "rrggbb") into [r,g,b]; falls back to black. */
+    private static int[] parseHex(String hex) {
+        try {
+            String s = hex.startsWith("#") ? hex.substring(1) : hex;
+            if (s.length() == 3) {
+                s = "" + s.charAt(0) + s.charAt(0) + s.charAt(1) + s.charAt(1) + s.charAt(2) + s.charAt(2);
+            }
+            int v = Integer.parseInt(s, 16);
+            return new int[] { (v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF };
+        } catch (Exception e) {
+            return new int[] { 0, 0, 0 };
+        }
+    }
 }

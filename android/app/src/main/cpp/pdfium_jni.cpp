@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "fpdf_edit.h"
+#include "fpdf_save.h"
 #include "fpdfview.h"
 
 #define LOG_TAG "PdfEngine"
@@ -179,6 +180,120 @@ JNIEXPORT void JNICALL
 Java_com_armitorenk_pdfeditor_PdfiumBridge_nativeClosePage(JNIEnv*, jclass, jlong pagePtr) {
     auto page = reinterpret_cast<FPDF_PAGE>(pagePtr);
     if (page) FPDF_ClosePage(page);
+}
+
+// ---- editing ops --------------------------------------------------------------------------------
+// Each loads the page by index, mutates the object by index, regenerates the page content stream
+// (so the change is persisted into the document) and closes the page. Re-render to see the result;
+// changes are included by nativeSaveDocument.
+
+JNIEXPORT jboolean JNICALL
+Java_com_armitorenk_pdfeditor_PdfiumBridge_nativeTransformObject(JNIEnv*, jclass, jlong handle,
+        jint pageIndex, jint objIndex,
+        jdouble a, jdouble b, jdouble c, jdouble d, jdouble e, jdouble f) {
+    auto* h = reinterpret_cast<DocHandle*>(handle);
+    if (!h || !h->doc) return JNI_FALSE;
+    FPDF_PAGE page = FPDF_LoadPage(h->doc, pageIndex);
+    if (!page) return JNI_FALSE;
+    jboolean ok = JNI_FALSE;
+    FPDF_PAGEOBJECT obj = FPDFPage_GetObject(page, objIndex);
+    if (obj) {
+        FPDFPageObj_Transform(obj, a, b, c, d, e, f);
+        FPDFPage_GenerateContent(page);
+        ok = JNI_TRUE;
+    }
+    FPDF_ClosePage(page);
+    return ok;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_armitorenk_pdfeditor_PdfiumBridge_nativeSetFillColor(JNIEnv*, jclass, jlong handle,
+        jint pageIndex, jint objIndex, jint r, jint g, jint b, jint a) {
+    auto* h = reinterpret_cast<DocHandle*>(handle);
+    if (!h || !h->doc) return JNI_FALSE;
+    FPDF_PAGE page = FPDF_LoadPage(h->doc, pageIndex);
+    if (!page) return JNI_FALSE;
+    jboolean ok = JNI_FALSE;
+    FPDF_PAGEOBJECT obj = FPDFPage_GetObject(page, objIndex);
+    if (obj) {
+        FPDFPageObj_SetFillColor(obj, (unsigned int) r, (unsigned int) g, (unsigned int) b, (unsigned int) a);
+        FPDFPage_GenerateContent(page);
+        ok = JNI_TRUE;
+    }
+    FPDF_ClosePage(page);
+    return ok;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_armitorenk_pdfeditor_PdfiumBridge_nativeSetText(JNIEnv* env, jclass, jlong handle,
+        jint pageIndex, jint objIndex, jstring text) {
+    auto* h = reinterpret_cast<DocHandle*>(handle);
+    if (!h || !h->doc) return JNI_FALSE;
+    FPDF_PAGE page = FPDF_LoadPage(h->doc, pageIndex);
+    if (!page) return JNI_FALSE;
+    jboolean ok = JNI_FALSE;
+    FPDF_PAGEOBJECT obj = FPDFPage_GetObject(page, objIndex);
+    if (obj) {
+        const jchar* chars = env->GetStringChars(text, nullptr);
+        const jsize len = env->GetStringLength(text);
+        std::vector<unsigned short> buf(static_cast<size_t>(len) + 1, 0);  // UTF-16LE, null-terminated
+        for (jsize i = 0; i < len; ++i) buf[i] = chars[i];
+        env->ReleaseStringChars(text, chars);
+        if (FPDFText_SetText(obj, reinterpret_cast<FPDF_WIDESTRING>(buf.data()))) {
+            FPDFPage_GenerateContent(page);
+            ok = JNI_TRUE;
+        }
+    }
+    FPDF_ClosePage(page);
+    return ok;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_armitorenk_pdfeditor_PdfiumBridge_nativeDeleteObject(JNIEnv*, jclass, jlong handle,
+        jint pageIndex, jint objIndex) {
+    auto* h = reinterpret_cast<DocHandle*>(handle);
+    if (!h || !h->doc) return JNI_FALSE;
+    FPDF_PAGE page = FPDF_LoadPage(h->doc, pageIndex);
+    if (!page) return JNI_FALSE;
+    jboolean ok = JNI_FALSE;
+    FPDF_PAGEOBJECT obj = FPDFPage_GetObject(page, objIndex);
+    if (obj && FPDFPage_RemoveObject(page, obj)) {
+        FPDFPageObj_Destroy(obj);  // RemoveObject detaches but does not free
+        FPDFPage_GenerateContent(page);
+        ok = JNI_TRUE;
+    }
+    FPDF_ClosePage(page);
+    return ok;
+}
+
+// FPDF_FILEWRITE sink that appends the saved bytes to a vector (fw must be the first member).
+struct ByteSink {
+    FPDF_FILEWRITE fw;
+    std::vector<uint8_t>* out;
+};
+static int WriteBlockToVector(FPDF_FILEWRITE* pThis, const void* data, unsigned long size) {
+    auto* sink = reinterpret_cast<ByteSink*>(pThis);
+    const uint8_t* p = static_cast<const uint8_t*>(data);
+    sink->out->insert(sink->out->end(), p, p + size);
+    return 1;
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_com_armitorenk_pdfeditor_PdfiumBridge_nativeSaveDocument(JNIEnv* env, jclass, jlong handle) {
+    auto* h = reinterpret_cast<DocHandle*>(handle);
+    if (!h || !h->doc) return nullptr;
+    std::vector<uint8_t> out;
+    ByteSink sink;
+    sink.fw.version = 1;
+    sink.fw.WriteBlock = WriteBlockToVector;
+    sink.out = &out;
+    if (!FPDF_SaveAsCopy(h->doc, &sink.fw, FPDF_NO_INCREMENTAL)) return nullptr;
+    jbyteArray arr = env->NewByteArray(static_cast<jsize>(out.size()));
+    if (!arr) return nullptr;
+    if (!out.empty()) {
+        env->SetByteArrayRegion(arr, 0, static_cast<jsize>(out.size()), reinterpret_cast<const jbyte*>(out.data()));
+    }
+    return arr;
 }
 
 JNIEXPORT void JNICALL

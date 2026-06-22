@@ -42,6 +42,25 @@ export interface PdfEnginePlugin {
   renderPage(options: { page: number; scale?: number }): Promise<RenderedPage>;
   /** List a page's editable objects, Z-ordered. */
   listObjects(options: { page: number }): Promise<{ objects: PdfObject[] }>;
+  /** Pre-multiply an object's matrix by [a,b,c,d,e,f] (move/scale/rotate). */
+  transformObject(options: {
+    page: number;
+    index: number;
+    a: number;
+    b: number;
+    c: number;
+    d: number;
+    e: number;
+    f: number;
+  }): Promise<void>;
+  /** Set an object's fill colour ("#rrggbb"). */
+  setObjectColor(options: { page: number; index: number; color: string }): Promise<void>;
+  /** Replace a text object's string (kept in its existing font). */
+  setObjectText(options: { page: number; index: number; text: string }): Promise<void>;
+  /** Delete an object; object indices shift afterwards, so re-list the page. */
+  deleteObject(options: { page: number; index: number }): Promise<void>;
+  /** Serialise the edited document to a base64 PDF. */
+  saveDocument(): Promise<{ data: string }>;
   /** Release the open document and free native memory. */
   closeDoc(): Promise<void>;
 }
