@@ -40,7 +40,7 @@ const editFamily = (serif: boolean) => (serif ? "EditorSerif, serif" : "EditorSa
 // A whisper of optical trim (1.5%) baked into the visual scale: with geometricPrecision +
 // the real font metrics the injected glyphs read a touch heavy; 0.985 takes off that "fat"
 // look without dwarfing the text. Static — NOT a box-fit/slack adjustment.
-const OPTICAL = 0.985;
+const OPTICAL = 0.98;
 
 // Document fonts injected into the DOM so the editor shows the run's REAL typeface.
 // Keyed by CSS family; the value is a promise that resolves true once the face loads,
@@ -494,7 +494,7 @@ export function TextLayer({
                 textRendering: "geometricPrecision",
                 WebkitFontSmoothing: "antialiased",
                 MozOsxFontSmoothing: "grayscale",
-                wordSpacing: "0.1em",
+                wordSpacing: "0.14em",
                 ...scaleStyle(k, baselinePx),
               }}
               className="absolute z-20 box-content whitespace-nowrap border border-blue-500 bg-white px-0.5 leading-none text-black shadow-sm outline-none"
@@ -583,7 +583,7 @@ function glyphStyle(edit: TextEdit, fontPx: number): CSSProperties {
     // Static prop to the space character — the DOM renders spaces a touch narrow vs the page.
     // Em-based so it tracks the font size; NOT a box-fit/slack calc (the word lengths are
     // untouched, only the " " gets a standard typographic nudge).
-    wordSpacing: "0.1em",
+    wordSpacing: "0.14em",
     textDecorationLine: decorationLine(edit),
     // Bold weight comes from the font itself (the injected face, or the bundled bold cut via
     // font-weight). Only add a HAIRLINE stroke for faux bold (bundled fallback, no injected
