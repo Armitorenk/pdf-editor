@@ -37,6 +37,7 @@ export interface TextEdit {
   bgColor?: string; // "#rrggbb" sampled behind the run; covers the old glyphs
   textColor?: string; // "#rrggbb" sampled from the original glyphs
   serif?: boolean; // original run used a serif family -> export with a serif font
+  mono?: boolean; // original run used a monospace/fixed-pitch family -> export with a mono font
   bold?: boolean; // original run is bold (from font metadata) -> render/export bold
   italic?: boolean; // original run is italic/oblique (metadata or skewed matrix)
   underline?: boolean; // original run was underlined (vector line below the baseline)

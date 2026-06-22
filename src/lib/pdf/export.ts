@@ -37,43 +37,47 @@ export async function exportPdf(
   const needsOriginal = pageOrder.some((p) => p.kind === "original");
   const src = needsOriginal ? await PDFDocument.load(originalBytes.slice()) : null;
 
-  // Embedded Unicode faces: the four Source Sans 3 styles (regular/bold/italic/bold-
-  // italic — a close match to the humanist sans many documents use) plus a serif.
-  // Each variant is only embedded if some edit needs it, and falls back to a lighter
-  // face (ultimately Helvetica) if its TTF can't be fetched.
-  let sansFont: PDFFont | null = null;
-  let sansBoldFont: PDFFont | null = null;
-  let sansItalicFont: PDFFont | null = null;
-  let sansBoldItalicFont: PDFFont | null = null;
-  let serifFont: PDFFont | null = null;
+  // Bundled Unicode fallback faces: Source Sans 3 (sans) · Noto Serif (serif) · Cousine
+  // (monospace), each in regular/bold/italic/bold-italic. A (family, style) face is only
+  // embedded when some edit actually needs it; a failed fetch falls back to the family's
+  // regular, which falls back to the sans regular (ultimately Helvetica).
+  const faces = new Map<string, PDFFont>();
+  let haveFaces = false;
+  const FILES: Record<string, Record<string, string>> = {
+    sans: { r: "editor-sans", b: "editor-sans-bold", i: "editor-sans-italic", bi: "editor-sans-bolditalic" },
+    serif: { r: "editor-serif", b: "editor-serif-bold", i: "editor-serif-italic", bi: "editor-serif-bolditalic" },
+    mono: { r: "editor-mono", b: "editor-mono-bold", i: "editor-mono-italic", bi: "editor-mono-bolditalic" },
+  };
+  const famOf = (t: TextEdit): "sans" | "serif" | "mono" => (t.mono ? "mono" : t.serif ? "serif" : "sans");
+  const styleOf = (t: TextEdit) => (t.bold && t.italic ? "bi" : t.bold ? "b" : t.italic ? "i" : "r");
   if (textEdits.length > 0) {
     out.registerFontkit(fontkitMod.default ?? fontkitMod);
-    const embedOr = async (url: string, fallback: () => Promise<PDFFont> | PDFFont) => {
+    const embedOr = async (file: string, fallback: () => Promise<PDFFont> | PDFFont) => {
       try {
-        const res = await fetch(url);
+        const res = await fetch(`/fonts/${file}.ttf`);
         if (!res.ok) throw new Error(`font fetch failed: ${res.status}`);
         return await out.embedFont(await res.arrayBuffer(), { subset: true });
       } catch {
         return fallback();
       }
     };
-    const need = (pred: (t: TextEdit) => boolean) => textEdits.some(pred);
-    const sansOf = (t: TextEdit) => !t.serif;
-
-    sansFont = await embedOr("/fonts/editor-sans.ttf", () => out.embedFont(StandardFonts.Helvetica));
-    sansBoldFont = need((t) => sansOf(t) && !!t.bold && !t.italic)
-      ? await embedOr("/fonts/editor-sans-bold.ttf", () => sansFont!)
-      : sansFont;
-    sansItalicFont = need((t) => sansOf(t) && !!t.italic && !t.bold)
-      ? await embedOr("/fonts/editor-sans-italic.ttf", () => sansFont!)
-      : sansFont;
-    sansBoldItalicFont = need((t) => sansOf(t) && !!t.bold && !!t.italic)
-      ? await embedOr("/fonts/editor-sans-bolditalic.ttf", () => sansBoldFont!)
-      : sansBoldFont;
-    serifFont = need((t) => !!t.serif)
-      ? await embedOr("/fonts/editor-serif.ttf", () => sansFont!)
-      : sansFont;
+    faces.set("sans-r", await embedOr(FILES.sans.r, () => out.embedFont(StandardFonts.Helvetica)));
+    const wanted = new Set(textEdits.map((t) => `${famOf(t)}-${styleOf(t)}`));
+    for (const key of wanted) {
+      const [fam, st] = key.split("-");
+      const famReg = `${fam}-r`;
+      if (!faces.has(famReg)) faces.set(famReg, await embedOr(FILES[fam].r, () => faces.get("sans-r")!));
+      if (st !== "r" && !faces.has(key)) faces.set(key, await embedOr(FILES[fam][st], () => faces.get(famReg)!));
+    }
+    haveFaces = true;
   }
+
+  // Pick the closest bundled face for an edit (family by serif/mono, style by bold/italic).
+  const pickBundled = (edit: TextEdit): PDFFont => {
+    const fam = edit.mono ? "mono" : edit.serif ? "serif" : "sans";
+    const st = edit.bold && edit.italic ? "bi" : edit.bold ? "b" : edit.italic ? "i" : "r";
+    return faces.get(`${fam}-${st}`) ?? faces.get(`${fam}-r`) ?? faces.get("sans-r")!;
+  };
 
   // --- Font reuse -----------------------------------------------------------
   // Prefer the document's OWN font for an edit, so the typeface matches exactly.
@@ -114,24 +118,13 @@ export async function exportPdf(
       page = out.addPage(ref.kind === "blank" ? [ref.width, ref.height] : A4);
     }
 
-    if (sansFont) {
+    if (haveFaces) {
       for (const edit of textEdits.filter((t) => t.pageId === ref.id)) {
-        // Reuse the original embedded font when it covers the text (exact match);
-        // otherwise pick the closest of the four bundled sans styles (serif gets the
-        // serif face, with faux-bold for serif bold).
+        // Reuse the original embedded font when it covers the text (exact match); otherwise
+        // pick the closest bundled face — the right sans/serif/mono family AND bold/italic cut
+        // (every family now ships a real bold/italic, so no faux-bold double-draw is needed).
         const reuse = await reuseFontFor(edit);
-        const font =
-          reuse ??
-          (edit.serif
-            ? serifFont!
-            : edit.bold && edit.italic
-              ? sansBoldItalicFont!
-              : edit.bold
-                ? sansBoldFont!
-                : edit.italic
-                  ? sansItalicFont!
-                  : sansFont);
-        const fauxBold = !reuse && edit.bold && edit.serif;
+        const font = reuse ?? pickBundled(edit);
         try {
           // (1) Size calibration. A reused (pdf.js-converted) program can carry metrics
           // that make pdf-lib draw it over/undersized. Compare its width for the ORIGINAL
@@ -182,12 +175,6 @@ export async function exportPdf(
             }
           };
           drawAt(0, 0);
-          if (fauxBold) {
-            const d = size * 0.03;
-            drawAt(d, 0);
-            drawAt(0, d);
-            drawAt(d, d);
-          }
           // Redraw underline / strikethrough across the new text (the white cover
           // erased the original vector line), so the decoration survives the edit.
           if (edit.underline || edit.strike) {

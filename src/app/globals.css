@@ -27,10 +27,11 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
-/* Editor fonts — the SAME faces the PDF export embeds (Source Sans 3 + a serif).
-   The text-edit overlay falls back to these instead of the platform UI font, so
-   (a) the on-screen text matches the downloaded PDF, and (b) it avoids Android's
-   Roboto/Noto, whose larger glyphs made edited text look oversized vs the page. */
+/* Editor fonts — the SAME faces the PDF export embeds: Source Sans 3 (sans), Noto Serif
+   (serif) and Cousine (monospace), each in regular/bold/italic/bold-italic. The text-edit
+   overlay falls back to these instead of the platform UI font, so (a) the on-screen text
+   matches the downloaded PDF, and (b) it avoids Android's Roboto/Noto, whose larger glyphs
+   made edited text look oversized vs the page. */
 @font-face {
   font-family: "EditorSans";
   font-style: normal;
@@ -65,6 +66,55 @@ body {
   font-weight: 400;
   font-display: swap;
   src: url("/fonts/editor-serif.ttf") format("truetype");
+}
+@font-face {
+  font-family: "EditorSerif";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/editor-serif-bold.ttf") format("truetype");
+}
+@font-face {
+  font-family: "EditorSerif";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/editor-serif-italic.ttf") format("truetype");
+}
+@font-face {
+  font-family: "EditorSerif";
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/editor-serif-bolditalic.ttf") format("truetype");
+}
+@font-face {
+  font-family: "EditorMono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/editor-mono.ttf") format("truetype");
+}
+@font-face {
+  font-family: "EditorMono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/editor-mono-bold.ttf") format("truetype");
+}
+@font-face {
+  font-family: "EditorMono";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/editor-mono-italic.ttf") format("truetype");
+}
+@font-face {
+  font-family: "EditorMono";
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/editor-mono-bolditalic.ttf") format("truetype");
 }
 
 /* Safe-area helpers for notches / gesture bars (viewport-fit: cover). */

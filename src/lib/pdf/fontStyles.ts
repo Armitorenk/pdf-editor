@@ -21,6 +21,7 @@ export interface FontStyleInfo {
   bold: boolean;
   italic: boolean;
   serif: boolean;
+  mono: boolean;
   italicAngle: number;
   stemV: number | null;
   weight: number | null;
@@ -28,12 +29,14 @@ export interface FontStyleInfo {
 }
 
 // PDF FontDescriptor Flags (1-based bit numbers in the spec → 0-based shifts here).
+const FLAG_FIXED_PITCH = 1 << 0; // bit 1
 const FLAG_SERIF = 1 << 1; // bit 2
 const FLAG_ITALIC = 1 << 6; // bit 7
 const FLAG_FORCE_BOLD = 1 << 18; // bit 19
 
 const NAME_BOLD = /bold|black|heavy|semibold|demibold|extrabold|\bbd\b|cmbx/i;
 const NAME_ITALIC = /italic|oblique|cmmi|cmti/i;
+const NAME_MONO = /mono|courier|consol|cousine|menlo|inconsolata|typewriter|\bcode\b|cmtt/i;
 
 const stripSubset = (n: string) => n.replace(/^[A-Z]{6}\+/, "");
 
@@ -58,9 +61,11 @@ function fromDescriptor(psName: string, desc: PDFDict): FontStyleInfo {
     NAME_ITALIC.test(psName) ||
     (f & FLAG_ITALIC) !== 0 ||
     Math.abs(italicAngle) > 1;
-  const serif = (f & FLAG_SERIF) !== 0;
+  const mono = (f & FLAG_FIXED_PITCH) !== 0 || NAME_MONO.test(psName);
+  // A fixed-pitch face is monospace, not serif — keep them exclusive so it maps to the mono font.
+  const serif = !mono && (f & FLAG_SERIF) !== 0;
 
-  return { psName, bold, italic, serif, italicAngle, stemV, weight, flags };
+  return { psName, bold, italic, serif, mono, italicAngle, stemV, weight, flags };
 }
 
 /**

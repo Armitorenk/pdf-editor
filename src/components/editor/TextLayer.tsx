@@ -18,6 +18,7 @@ interface DetectedText {
   width: number;
   /** Original style, detected from the PDF's font metadata (see fontStyles.ts). */
   serif: boolean;
+  mono: boolean;
   bold: boolean;
   italic: boolean;
   /** Font ascent (fraction of em) for baseline-correct overlay placement. */
@@ -36,7 +37,8 @@ const SAMPLE_MAX_SIDE = 1400;
 
 // Bundled fallback faces (the SAME ones export embeds) for runs whose own font we can't
 // inject/calibrate — correctly sized, close match, and never the platform UI font.
-const editFamily = (serif: boolean) => (serif ? "EditorSerif, serif" : "EditorSans, sans-serif");
+const editFamily = (serif: boolean, mono: boolean) =>
+  mono ? "EditorMono, monospace" : serif ? "EditorSerif, serif" : "EditorSans, sans-serif";
 
 // --- Manual edit controls (tap a run -> move / resize / recolour / spacing) ---
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
@@ -316,7 +318,7 @@ export function TextLayer({
       // name + serif flag; the document-wide map gives bold/italic/serif.
       const cache = new Map<
         string,
-        { bold: boolean; italic: boolean; serif: boolean; hasMeta: boolean; psName: string | null; ascent: number; fontFamily?: string }
+        { bold: boolean; italic: boolean; serif: boolean; mono: boolean; hasMeta: boolean; psName: string | null; ascent: number; fontFamily?: string }
       >();
       const baseStyle = (fontName: string | undefined) => {
         const key = fontName ?? "";
@@ -340,12 +342,16 @@ export function TextLayer({
         const meta = lookupFontStyle(fontStyleMap, psName);
         const styleEntry = fontName ? content.styles[fontName] : undefined;
         const family = styleEntry?.fontFamily || "";
+        const familyMono = /mono/i.test(family);
         const familySerif = /serif/i.test(family) && !/sans/i.test(family);
         const ascent = typeof styleEntry?.ascent === "number" && styleEntry.ascent > 0 ? styleEntry.ascent : 0.8;
+        const mono = meta?.mono ?? familyMono;
         const out = {
           bold: meta?.bold ?? false,
           italic: meta?.italic ?? false,
-          serif: meta?.serif ?? serifFlag ?? familySerif,
+          // Fixed-pitch wins over serif so the run maps to the monospace fallback face.
+          serif: !mono && (meta?.serif ?? serifFlag ?? familySerif),
+          mono,
           hasMeta: !!meta,
           psName,
           ascent,
@@ -375,6 +381,7 @@ export function TextLayer({
           transform: r.transform,
           width: r.width,
           serif: b.serif,
+          mono: b.mono,
           bold,
           italic,
           ascent: b.ascent,
@@ -473,8 +480,8 @@ export function TextLayer({
         // the input anti-scale (box stays put); layout top/baseline use fontPx, never k.
         const k = item.sizeScale * OPTICAL;
         const originalFamily = item.fontFamily
-          ? `${item.fontFamily}, ${editFamily(item.serif)}`
-          : editFamily(item.serif);
+          ? `${item.fontFamily}, ${editFamily(item.serif, item.mono)}`
+          : editFamily(item.serif, item.mono);
 
         // PDF-space font size (zoom-independent), captured for export.
         const pdfFontSize = Math.hypot(item.transform[2], item.transform[3]);
@@ -509,6 +516,7 @@ export function TextLayer({
             bgColor: colors?.bg,
             textColor: colors?.text,
             serif: item.serif,
+            mono: item.mono,
             // Keep a manual bold/italic toggle through a string re-edit (else detection wins).
             bold: edit?.bold ?? item.bold,
             italic: edit?.italic ?? item.italic,
@@ -869,7 +877,7 @@ function glyphStyle(edit: TextEdit, fontPx: number): CSSProperties {
     color: edit.userColor ?? edit.textColor ?? "#000000",
     fontWeight: edit.bold ? 700 : undefined,
     fontStyle: edit.italic ? "italic" : undefined,
-    fontFamily: edit.fontFamily ? `${edit.fontFamily}, ${editFamily(!!edit.serif)}` : editFamily(!!edit.serif),
+    fontFamily: edit.fontFamily ? `${edit.fontFamily}, ${editFamily(!!edit.serif, !!edit.mono)}` : editFamily(!!edit.serif, !!edit.mono),
     // Word spacing: a static base nudge (DOM paints spaces a hair narrow) PLUS the user's
     // manual adjustment. Letter spacing is purely the user's (0 by default). Em-based so both
     // track the font size and stay proportional between screen and the exported PDF.
