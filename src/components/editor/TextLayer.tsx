@@ -40,7 +40,7 @@ const editFamily = (serif: boolean) => (serif ? "EditorSerif, serif" : "EditorSa
 // A whisper of optical trim (1.5%) baked into the visual scale: with geometricPrecision +
 // the real font metrics the injected glyphs read a touch heavy; 0.985 takes off that "fat"
 // look without dwarfing the text. Static — NOT a box-fit/slack adjustment.
-const OPTICAL = 0.985;
+const OPTICAL = 0.98;
 
 // Document fonts injected into the DOM so the editor shows the run's REAL typeface.
 // Keyed by CSS family; the value is a promise that resolves true once the face loads,
@@ -495,7 +495,6 @@ export function TextLayer({
                 WebkitFontSmoothing: "antialiased",
                 MozOsxFontSmoothing: "grayscale",
                 wordSpacing: "0.16em",
-                WebkitTextStroke: `${Math.min(0.25, fontPx * (item.bold ? 0.014 : 0.009))}px currentColor`,
                 ...scaleStyle(k, baselinePx),
               }}
               className="absolute z-20 box-content whitespace-nowrap border border-blue-500 bg-white px-0.5 leading-none text-black shadow-sm outline-none"
@@ -586,10 +585,12 @@ function glyphStyle(edit: TextEdit, fontPx: number): CSSProperties {
     // untouched, only the " " gets a standard typographic nudge).
     wordSpacing: "0.16em",
     textDecorationLine: decorationLine(edit),
-    // A hairline same-colour stroke on ALL runs adds the requested touch of weight (the
-    // injected glyphs read a hair thin on screen). Capped at 0.25px so it never fills glyph
-    // counters / muddies; bold runs get a touch more. It also scales with the glyph transform.
-    WebkitTextStroke: `${Math.min(0.25, fontPx * (edit.bold ? 0.014 : 0.009))}px currentColor`,
+    // Bold weight comes from the font itself (the injected face, or the bundled bold cut via
+    // font-weight). Only add a HAIRLINE stroke for faux bold (bundled fallback, no injected
+    // face) — and keep it ≤0.2px so it never fills in glyph counters / muddies the text. The
+    // injected font is left untouched so a real bold cut isn't double-thickened.
+    WebkitTextStroke:
+      edit.bold && !edit.fontFamily ? `${Math.min(0.2, fontPx * 0.005)}px currentColor` : undefined,
   };
 }
 
