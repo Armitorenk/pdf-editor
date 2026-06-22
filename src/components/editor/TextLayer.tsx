@@ -44,12 +44,10 @@ const clampUserScale = (n: number) => clamp(n, 0.2, 5);
 // Base word-spacing nudge baked into the on-screen glyphs (the WebView paints spaces a hair
 // narrow); the user's adjustment is added on top of this.
 const BASE_WORD_SPACING_EM = 0.16;
-const LETTER_STEP = 0.02; // em per tap
-const WORD_STEP = 0.05; // em per tap
 const SWATCHES = ["#000000", "#ffffff", "#e11d48", "#2563eb", "#16a34a", "#f59e0b"];
-// Floating-toolbar button: a 44dp-ish touch target.
+// Floating-toolbar buttons: a 44dp-ish target, and a tighter one for the numeric steppers.
 const TOOL_BTN = "flex h-10 w-10 items-center justify-center rounded-md hover:bg-neutral-100 active:bg-neutral-200";
-const TOOLBAR_H = 48;
+const TOOL_BTN_SM = "flex h-8 w-7 items-center justify-center rounded hover:bg-neutral-100 active:bg-neutral-200";
 
 // A whisper of optical trim (1.5%) baked into the visual scale: with geometricPrecision +
 // the real font metrics the injected glyphs read a touch heavy; 0.985 takes off that "fat"
@@ -506,6 +504,8 @@ export function TextLayer({
             userLetterSpacing: edit?.userLetterSpacing,
             userWordSpacing: edit?.userWordSpacing,
           });
+          // Select the just-edited run so its tune toolbar appears right below it (discoverable).
+          setSelectedKey(key);
         };
 
         if (isEditing) {
@@ -561,13 +561,7 @@ export function TextLayer({
           const textLeft = left + effDx * scale;
           const textTop = top - effDy * scale;
           const colorNow = edit.userColor ?? edit.textColor ?? "#000000";
-          const toolbarTop = textTop > TOOLBAR_H + 8 ? textTop - TOOLBAR_H - 8 : textTop + boxHeight + 8;
-          const setScale = (mult: number) =>
-            onCommit({ ...edit, userScale: clampUserScale((edit.userScale ?? 1) * mult) });
-          const adjLetter = (d: number) =>
-            onCommit({ ...edit, userLetterSpacing: clamp((edit.userLetterSpacing ?? 0) + d, -0.2, 1) });
-          const adjWord = (d: number) =>
-            onCommit({ ...edit, userWordSpacing: clamp((edit.userWordSpacing ?? 0) + d, -0.2, 2) });
+          const toolbarTop = textTop + boxHeight + 8; // a small toolbar BELOW the text
           return (
             <Fragment key={key}>
               <div
@@ -605,49 +599,78 @@ export function TextLayer({
                   {edit.newText}
                 </span>
               </div>
-              {isSelected && (
+              {/* alignment guides + coordinate badge while dragging to reposition */}
+              {isSelected && sh && (
+                <Fragment>
+                  <div className="pointer-events-none absolute bottom-0 top-0 z-20 border-l border-dashed border-blue-500/60" style={{ left: textLeft }} />
+                  <div className="pointer-events-none absolute left-0 right-0 z-20 border-t border-dashed border-blue-500/60" style={{ top: textTop + baselinePx }} />
+                  <div
+                    className="pointer-events-none absolute z-30 whitespace-nowrap rounded bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium text-white"
+                    style={{ left: textLeft, top: Math.max(0, textTop - 18) }}
+                  >
+                    x {Math.round(edit.x + effDx)} · y {Math.round(edit.y + effDy)} pt
+                  </div>
+                </Fragment>
+              )}
+              {isSelected && !sh && (
                 <div
-                  className="absolute z-30 flex items-center gap-1 overflow-x-auto rounded-lg bg-white p-1 shadow-lg ring-1 ring-black/10"
-                  style={{ left: textLeft, top: toolbarTop, maxWidth: "92vw" }}
+                  className="absolute z-30 flex max-w-[92vw] flex-wrap items-center gap-1 rounded-lg bg-white p-1.5 shadow-lg ring-1 ring-black/10"
+                  style={{ left: Math.max(2, textLeft), top: toolbarTop }}
                   onPointerDown={(e) => e.stopPropagation()}
                 >
                   <button className={TOOL_BTN} title="Metni düzenle" onClick={() => { setSelectedKey(null); setEditingKey(key); }}>
                     <Pencil size={18} />
                   </button>
-                  {/* size / letter-spacing / word-spacing steppers */}
+                  <NumberField
+                    label="boyut"
+                    suffix="pt"
+                    value={edit.fontSize * (edit.userScale ?? 1)}
+                    decimals={1}
+                    step={0.5}
+                    min={edit.fontSize * 0.2}
+                    max={edit.fontSize * 5}
+                    onChange={(pt) => onCommit({ ...edit, userScale: clampUserScale(pt / edit.fontSize) })}
+                  />
+                  <NumberField
+                    label="harf"
+                    suffix="em"
+                    value={edit.userLetterSpacing ?? 0}
+                    decimals={2}
+                    step={0.02}
+                    min={-0.2}
+                    max={1}
+                    onChange={(em) => onCommit({ ...edit, userLetterSpacing: em })}
+                  />
+                  <NumberField
+                    label="kelime"
+                    suffix="em"
+                    value={edit.userWordSpacing ?? 0}
+                    decimals={2}
+                    step={0.05}
+                    min={-0.2}
+                    max={2}
+                    onChange={(em) => onCommit({ ...edit, userWordSpacing: em })}
+                  />
                   <div className="flex shrink-0 items-center gap-0.5">
-                    <span className="px-1 text-[10px] leading-none text-neutral-500">boyut</span>
-                    <button className={TOOL_BTN} title="Küçült" onClick={() => setScale(1 / 1.1)}><Minus size={16} /></button>
-                    <button className={TOOL_BTN} title="Büyüt" onClick={() => setScale(1.1)}><Plus size={16} /></button>
+                    {SWATCHES.map((c) => (
+                      <button
+                        key={c}
+                        title={c}
+                        onClick={() => onCommit({ ...edit, userColor: c })}
+                        className="h-7 w-7 shrink-0 rounded-full ring-1 ring-black/20"
+                        style={{ backgroundColor: c }}
+                      />
+                    ))}
+                    <label className={`${TOOL_BTN} relative cursor-pointer`} title="Renk seç">
+                      <Palette size={18} />
+                      <input
+                        type="color"
+                        value={colorNow}
+                        onChange={(e) => onCommit({ ...edit, userColor: e.target.value })}
+                        className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                      />
+                    </label>
                   </div>
-                  <div className="flex shrink-0 items-center gap-0.5">
-                    <span className="px-1 text-[10px] leading-none text-neutral-500">harf</span>
-                    <button className={TOOL_BTN} title="Harf aralığı azalt" onClick={() => adjLetter(-LETTER_STEP)}><Minus size={16} /></button>
-                    <button className={TOOL_BTN} title="Harf aralığı artır" onClick={() => adjLetter(LETTER_STEP)}><Plus size={16} /></button>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-0.5">
-                    <span className="px-1 text-[10px] leading-none text-neutral-500">kelime</span>
-                    <button className={TOOL_BTN} title="Kelime aralığı azalt" onClick={() => adjWord(-WORD_STEP)}><Minus size={16} /></button>
-                    <button className={TOOL_BTN} title="Kelime aralığı artır" onClick={() => adjWord(WORD_STEP)}><Plus size={16} /></button>
-                  </div>
-                  {SWATCHES.map((c) => (
-                    <button
-                      key={c}
-                      title={c}
-                      onClick={() => onCommit({ ...edit, userColor: c })}
-                      className="h-7 w-7 shrink-0 rounded-full ring-1 ring-black/20"
-                      style={{ backgroundColor: c }}
-                    />
-                  ))}
-                  <label className={`${TOOL_BTN} relative cursor-pointer`} title="Renk seç">
-                    <Palette size={18} />
-                    <input
-                      type="color"
-                      value={colorNow}
-                      onChange={(e) => onCommit({ ...edit, userColor: e.target.value })}
-                      className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                    />
-                  </label>
                   <button className={`${TOOL_BTN} text-red-600`} title="Sil" onClick={() => { setSelectedKey(null); onRemove(key); }}>
                     <Trash2 size={18} />
                   </button>
@@ -671,6 +694,62 @@ export function TextLayer({
           />
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * A compact numeric stepper with a typeable field — taps on −/+ nudge by `step`, but the user
+ * can also focus the field and type an exact value (e.g. 36 → 36.5). While focused it shows the
+ * raw `draft` string so decimals/minus survive; on blur it reverts to the formatted value.
+ */
+function NumberField({
+  label,
+  suffix,
+  value,
+  onChange,
+  step,
+  min,
+  max,
+  decimals = 2,
+}: {
+  label: string;
+  suffix?: string;
+  value: number;
+  onChange: (n: number) => void;
+  step: number;
+  min: number;
+  max: number;
+  decimals?: number;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const fmt = (n: number) => String(Number(n.toFixed(decimals)));
+  const set = (n: number) => onChange(clamp(n, min, max));
+  return (
+    <div className="flex shrink-0 items-center gap-0.5">
+      <span className="px-0.5 text-[10px] leading-none text-neutral-500">{label}</span>
+      <button className={TOOL_BTN_SM} title={`${label} azalt`} onClick={() => set(value - step)}>
+        <Minus size={14} />
+      </button>
+      <input
+        value={draft ?? fmt(value)}
+        inputMode="decimal"
+        onFocus={(e) => e.currentTarget.select()}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          const n = parseFloat(e.target.value);
+          if (!Number.isNaN(n)) set(n);
+        }}
+        onBlur={() => setDraft(null)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+        }}
+        className="w-11 rounded border border-neutral-300 px-1 py-1 text-center text-xs tabular-nums outline-none focus:border-blue-500"
+      />
+      <button className={TOOL_BTN_SM} title={`${label} artır`} onClick={() => set(value + step)}>
+        <Plus size={14} />
+      </button>
+      {suffix && <span className="pr-0.5 text-[10px] text-neutral-400">{suffix}</span>}
     </div>
   );
 }
