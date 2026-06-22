@@ -1,6 +1,6 @@
 "use client";
 
-import { FileText, FileUp, Trash2 } from "lucide-react";
+import { Crown, FileText, FileUp, Trash2 } from "lucide-react";
 import type { ProjectMeta } from "@/lib/projects";
 import { cn } from "@/lib/utils";
 
@@ -11,6 +11,8 @@ interface ProjectLibraryProps {
   onOpenFile: () => void;
   onOpenProject: (meta: ProjectMeta) => void;
   onDeleteProject: (id: string) => void;
+  isPro?: boolean;
+  onGoPro?: () => void;
 }
 
 /**
@@ -25,6 +27,8 @@ export function ProjectLibrary({
   onOpenFile,
   onOpenProject,
   onDeleteProject,
+  isPro,
+  onGoPro,
 }: ProjectLibraryProps) {
   return (
     <div className="h-full overflow-y-auto">
@@ -43,6 +47,22 @@ export function ProjectLibrary({
 
         {error && (
           <p className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{error}</p>
+        )}
+
+        {!isPro && onGoPro && (
+          <button
+            onClick={onGoPro}
+            className="mt-3 flex w-full items-center gap-3 rounded-2xl border border-blue-200 bg-gradient-to-br from-blue-50 to-indigo-50 p-4 text-left transition-colors hover:border-blue-300"
+          >
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white">
+              <Crown className="h-5 w-5" />
+            </span>
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="text-sm font-semibold text-neutral-800">Go Pro — one-time</span>
+              <span className="truncate text-xs text-neutral-500">Unlimited exports &amp; no ads, forever</span>
+            </span>
+            <span className="shrink-0 rounded-full bg-blue-600 px-3 py-1 text-xs font-semibold text-white">Unlock</span>
+          </button>
         )}
 
         <div className="mt-8">

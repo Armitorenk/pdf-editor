@@ -6,6 +6,8 @@ import { ImagePlus, Loader2, Maximize, ZoomIn, ZoomOut } from "lucide-react";
 import { Capacitor } from "@capacitor/core";
 import { usePdfDocument } from "@/hooks/usePdfDocument";
 import { setHandoffPdf } from "@/lib/object/handoff";
+import { canExport, isPro, recordExport } from "@/lib/pro";
+import { Paywall } from "@/components/monetization/Paywall";
 import { cn } from "@/lib/utils";
 import { saveFile } from "@/lib/save";
 import { exportPdf } from "@/lib/pdf/export";
@@ -89,6 +91,13 @@ export function PdfEditor() {
   const [annotationColor, setAnnotationColor] = useState("#ef4444");
   const [annotationWidth, setAnnotationWidth] = useState(2);
   const [isExporting, setIsExporting] = useState(false);
+
+  // Monetization: a one-time Pro unlock removes the daily free-export limit (and the ad). Editing
+  // is always free; the paywall only appears when the daily quota is spent or the user opts in.
+  const [paywallOpen, setPaywallOpen] = useState(false);
+  const [proTick, setProTick] = useState(0); // bump to re-read Pro/quota after a change
+  void proTick;
+  const pro = isPro();
 
   // --- Project library / persistence ---
   const [projectId, setProjectId] = useState<string | null>(null);
@@ -630,13 +639,20 @@ export function PdfEditor() {
   const handleExport = useCallback(
     async (format: ExportFormat) => {
       if (!fileBytes || !doc) return;
+      // Freemium gate: editing is free, but exporting beyond the daily quota needs Pro.
+      if (!canExport()) {
+        setPaywallOpen(true);
+        return;
+      }
       setIsExporting(true);
+      let exported = false;
       try {
         const base = fileName?.replace(/\.pdf$/i, "") ?? "document";
 
         if (format === "txt") {
           const text = await extractText(doc, pageOrder, textEdits);
           await saveFile(`${base}.txt`, new Blob([text], { type: "text/plain;charset=utf-8" }));
+          exported = true;
           return;
         }
 
@@ -650,6 +666,7 @@ export function PdfEditor() {
 
         if (format === "pdf") {
           await saveFile(`${base}-edited.pdf`, new Blob([pdfBytes as BlobPart], { type: "application/pdf" }));
+          exported = true;
           return;
         }
 
@@ -662,11 +679,17 @@ export function PdfEditor() {
         } else {
           await saveFile(`${base}-${ext}.zip`, await imagesToZip(images));
         }
+        exported = true;
       } catch (err) {
         console.error("Export failed:", err);
         alert("Export failed. See the console for details.");
       } finally {
         setIsExporting(false);
+        // Only successful exports count against the daily free quota (no-op for Pro).
+        if (exported) {
+          recordExport();
+          setProTick((t) => t + 1);
+        }
       }
     },
     [fileBytes, doc, pageOrder, textEdits, imageOverlays, annotations, fileName],
@@ -843,6 +866,8 @@ export function PdfEditor() {
               onOpenFile={openFilePicker}
               onOpenProject={openProject}
               onDeleteProject={handleDeleteProject}
+              isPro={pro}
+              onGoPro={() => setPaywallOpen(true)}
             />
           )}
 
@@ -896,6 +921,8 @@ export function PdfEditor() {
           )}
         </div>
       </div>
+
+      <Paywall open={paywallOpen} onClose={() => setPaywallOpen(false)} onUnlocked={() => setProTick((t) => t + 1)} />
     </div>
   );
 }
