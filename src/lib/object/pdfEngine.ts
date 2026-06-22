@@ -1,0 +1,54 @@
+import { registerPlugin } from "@capacitor/core";
+
+/**
+ * Native PDF object-editing engine — the TypeScript contract for the Android PDFium plugin
+ * (see docs/object-editing-architecture.md). The WebView UI drives object selection /
+ * transform / editing through these methods; the native side wraps PDFium's FPDFEdit API.
+ *
+ * Phase 0: the methods are stubbed on the native side; this file pins the interface the rest
+ * of the app codes against, so the UI and the engine can evolve independently.
+ */
+
+/** PDFium page-object kind (FPDFPageObj_GetType). */
+export type PdfObjectType = "text" | "image" | "path" | "shading" | "form" | "unknown";
+
+/** One editable object on a page, as reported by the engine. */
+export interface PdfObject {
+  /** Index in the page's object list — also the Z-order (paint order). */
+  id: number;
+  type: PdfObjectType;
+  /** Bounds in PDF points, lower-left origin: [left, bottom, right, top]. */
+  bounds: [number, number, number, number];
+  /** Affine matrix [a, b, c, d, e, f] (FPDFPageObj_GetMatrix) — move/scale/rotate live here. */
+  matrix: [number, number, number, number, number, number];
+}
+
+/** A rendered page bitmap plus the geometry needed to overlay the editing UI. */
+export interface RenderedPage {
+  /** Base64 PNG of the rendered page. */
+  data: string;
+  /** Bitmap size in device px. */
+  width: number;
+  height: number;
+  /** Intrinsic page size in PDF points (for the px↔point overlay mapping). */
+  pageWidth: number;
+  pageHeight: number;
+}
+
+export interface PdfEnginePlugin {
+  /** Load a document from base64 bytes; resolves the page count. */
+  openDoc(options: { data: string }): Promise<{ pages: number }>;
+  /** Rasterise a page at `scale` (default 1) for display under the editing overlay. */
+  renderPage(options: { page: number; scale?: number }): Promise<RenderedPage>;
+  /** List a page's editable objects, Z-ordered. */
+  listObjects(options: { page: number }): Promise<{ objects: PdfObject[] }>;
+  /** Release the open document and free native memory. */
+  closeDoc(): Promise<void>;
+}
+
+/**
+ * Native engine handle. Available on Android (Capacitor plugin "PdfEngine"); on the web it is
+ * unavailable — callers should feature-detect via `Capacitor.isNativePlatform()` and fall back
+ * to the existing pdf.js path until the native engine ships.
+ */
+export const PdfEngine = registerPlugin<PdfEnginePlugin>("PdfEngine");
