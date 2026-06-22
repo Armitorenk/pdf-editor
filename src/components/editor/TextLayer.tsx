@@ -1,6 +1,7 @@
 "use client";
 
-import { type CSSProperties, useEffect, useRef, useState } from "react";
+import { type CSSProperties, Fragment, useEffect, useRef, useState } from "react";
+import { Check, Minus, Palette, Pencil, Plus, Trash2 } from "lucide-react";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 import { multiplyMatrix } from "@/lib/pdf/coordinates";
 import { sampleRunColors, runRelStem, isBold, percentile, detectDecorations, type PageSample } from "@/lib/pdf/sampleColor";
@@ -36,6 +37,13 @@ const SAMPLE_MAX_SIDE = 1400;
 // Bundled fallback faces (the SAME ones export embeds) for runs whose own font we can't
 // inject/calibrate — correctly sized, close match, and never the platform UI font.
 const editFamily = (serif: boolean) => (serif ? "EditorSerif, serif" : "EditorSans, sans-serif");
+
+// --- Manual edit controls (tap an edited run -> move / resize / recolour) ---
+const clampUserScale = (n: number) => Math.min(5, Math.max(0.2, n));
+const SWATCHES = ["#000000", "#ffffff", "#e11d48", "#2563eb", "#16a34a", "#f59e0b"];
+// Floating-toolbar button: a 44dp-ish touch target.
+const TOOL_BTN = "flex h-10 w-10 items-center justify-center rounded-md hover:bg-neutral-100 active:bg-neutral-200";
+const TOOLBAR_H = 48;
 
 // A whisper of optical trim (1.5%) baked into the visual scale: with geometricPrecision +
 // the real font metrics the injected glyphs read a touch heavy; 0.985 takes off that "fat"
@@ -191,6 +199,34 @@ export function TextLayer({
   const pageStemRef = useRef<number | null>(null);
   const [items, setItems] = useState<DetectedText[] | null>(null);
   const [editingKey, setEditingKey] = useState<string | null>(null);
+  // Tap-selected edit (shows the floating move/size/colour toolbar; drag to move).
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const dragRef = useRef<{ key: string; startX: number; startY: number } | null>(null);
+  const [liveShift, setLiveShift] = useState<{ dx: number; dy: number } | null>(null);
+
+  // Drag the selected edit to move it (only once selected, so the first tap just selects).
+  function onTextPointerDown(e: React.PointerEvent, key: string) {
+    if (selectedKey !== key) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragRef.current = { key, startX: e.clientX, startY: e.clientY };
+  }
+  function onTextPointerMove(e: React.PointerEvent) {
+    const d = dragRef.current;
+    if (!d) return;
+    setLiveShift({ dx: (e.clientX - d.startX) / scale, dy: -(e.clientY - d.startY) / scale });
+  }
+  function onTextPointerUp(e: React.PointerEvent) {
+    const d = dragRef.current;
+    if (!d) return;
+    const dx = (e.clientX - d.startX) / scale;
+    const dy = -(e.clientY - d.startY) / scale;
+    dragRef.current = null;
+    setLiveShift(null);
+    const edit = edits[d.key];
+    if (edit && (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01)) {
+      onCommit({ ...edit, userDx: (edit.userDx ?? 0) + dx, userDy: (edit.userDy ?? 0) + dy });
+    }
+  }
 
   // Detect text runs once per page — only needed while editing.
   useEffect(() => {
@@ -351,31 +387,27 @@ export function TextLayer({
           // Pure ascent drop onto the baseline (no manual lift — the loaded font's own metrics
           // are correct); shared by `top` and the transform pivot so scaling stays on the line.
           const baselinePx = ascent * fontPx;
-          const kVis = (edit.sizeScale ?? 1) * OPTICAL;
+          const kVis = (edit.sizeScale ?? 1) * OPTICAL * (edit.userScale ?? 1);
+          const baseLeft = edit.x * scale;
+          const baseTop = baselineDomY - baselinePx;
+          const coverW = Math.max(edit.width * scale, fontPx * 0.4);
           return (
-            <div
-              key={textEditKey(edit.pageId, edit.itemIndex)}
-              style={{
-                ...coverStyle(edit),
-                left: edit.x * scale,
-                top: baselineDomY - baselinePx,
-                minWidth: Math.max(edit.width * scale, fontPx * 0.4),
-                height: fontPx * 1.25,
-              }}
-              className="absolute box-content"
-            >
-              <span
-                style={{
-                  position: "absolute",
-                  left: 0,
-                  top: 0,
-                  ...glyphStyle(edit, fontPx),
-                  ...scaleStyle(kVis, baselinePx),
-                }}
+            <Fragment key={textEditKey(edit.pageId, edit.itemIndex)}>
+              {/* cover stays over the ORIGINAL glyphs */}
+              <div
+                style={{ ...coverStyle(edit), left: baseLeft, top: baseTop, minWidth: coverW, height: fontPx * 1.25 }}
+                className="absolute box-content"
+              />
+              {/* new text — moved by the user's position nudge */}
+              <div
+                style={{ position: "absolute", left: baseLeft + (edit.userDx ?? 0) * scale, top: baseTop - (edit.userDy ?? 0) * scale }}
+                className="box-content"
               >
-                {edit.newText}
-              </span>
-            </div>
+                <span style={{ position: "absolute", left: 0, top: 0, ...glyphStyle(edit, fontPx), ...scaleStyle(kVis, baselinePx) }}>
+                  {edit.newText}
+                </span>
+              </div>
+            </Fragment>
           );
         })}
       </div>
@@ -460,6 +492,11 @@ export function TextLayer({
             ascent: item.ascent,
             fontFamily: item.fontFamily,
             sizeScale: item.sizeScale,
+            // Keep any manual move/size/colour the user already applied to this run.
+            userDx: edit?.userDx,
+            userDy: edit?.userDy,
+            userScale: edit?.userScale,
+            userColor: edit?.userColor,
           });
         };
 
@@ -503,29 +540,100 @@ export function TextLayer({
           );
         }
 
-        // Committed edit: a clickable cover (original size, unscaled — always hides the
-        // original) carrying the baseline-scaled glyphs.
+        // Committed edit: a fixed cover (over the original glyphs) + a separately-positioned
+        // text element that the user can tap to select, then drag to move, resize and recolour
+        // via a floating toolbar. The cover never moves, so the original stays hidden.
         if (edit) {
+          const isSelected = selectedKey === key;
+          const sh = isSelected ? liveShift : null;
+          const effDx = (edit.userDx ?? 0) + (sh ? sh.dx : 0);
+          const effDy = (edit.userDy ?? 0) + (sh ? sh.dy : 0);
+          const kC = item.sizeScale * OPTICAL * (edit.userScale ?? 1);
+          const textLeft = left + effDx * scale;
+          const textTop = top - effDy * scale;
+          const colorNow = edit.userColor ?? edit.textColor ?? "#000000";
+          const toolbarTop = textTop > TOOLBAR_H + 8 ? textTop - TOOLBAR_H - 8 : textTop + boxHeight + 8;
+          const setScale = (mult: number) =>
+            onCommit({ ...edit, userScale: clampUserScale((edit.userScale ?? 1) * mult) });
           return (
-            <button
-              key={key}
-              onClick={() => setEditingKey(key)}
-              title={`${item.str} → ${edit.newText}`}
-              style={{ ...coverStyle(edit), left, top, minWidth: widthPx, height: boxHeight }}
-              className="absolute z-10 box-content cursor-text whitespace-nowrap text-left ring-1 ring-amber-400"
-            >
-              <span
-                style={{
-                  position: "absolute",
-                  left: 0,
-                  top: 0,
-                  ...glyphStyle(edit, fontPx),
-                  ...scaleStyle(k, baselinePx),
+            <Fragment key={key}>
+              <div
+                style={{ ...coverStyle(edit), left, top, minWidth: widthPx, height: boxHeight }}
+                className="pointer-events-none absolute z-10 box-content"
+              />
+              <div
+                onClick={() => {
+                  if (!isSelected) setSelectedKey(key);
                 }}
+                onPointerDown={(e) => onTextPointerDown(e, key)}
+                onPointerMove={onTextPointerMove}
+                onPointerUp={onTextPointerUp}
+                title={`${item.str} → ${edit.newText}`}
+                style={{
+                  left: textLeft,
+                  top: textTop,
+                  minWidth: widthPx,
+                  height: boxHeight,
+                  touchAction: isSelected ? "none" : undefined,
+                }}
+                className={`absolute z-20 box-content whitespace-nowrap text-left ${
+                  isSelected ? "cursor-move ring-2 ring-blue-500" : "cursor-pointer ring-1 ring-amber-400"
+                }`}
               >
-                {edit.newText}
-              </span>
-            </button>
+                <span
+                  style={{
+                    position: "absolute",
+                    left: 0,
+                    top: 0,
+                    ...glyphStyle(edit, fontPx),
+                    ...scaleStyle(kC, baselinePx),
+                  }}
+                >
+                  {edit.newText}
+                </span>
+              </div>
+              {isSelected && (
+                <div
+                  className="absolute z-30 flex items-center gap-1 overflow-x-auto rounded-lg bg-white p-1 shadow-lg ring-1 ring-black/10"
+                  style={{ left: textLeft, top: toolbarTop, maxWidth: "92vw" }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                >
+                  <button className={TOOL_BTN} title="Metni düzenle" onClick={() => { setSelectedKey(null); setEditingKey(key); }}>
+                    <Pencil size={18} />
+                  </button>
+                  <button className={TOOL_BTN} title="Küçült" onClick={() => setScale(1 / 1.1)}>
+                    <Minus size={18} />
+                  </button>
+                  <button className={TOOL_BTN} title="Büyüt" onClick={() => setScale(1.1)}>
+                    <Plus size={18} />
+                  </button>
+                  {SWATCHES.map((c) => (
+                    <button
+                      key={c}
+                      title={c}
+                      onClick={() => onCommit({ ...edit, userColor: c })}
+                      className="h-7 w-7 shrink-0 rounded-full ring-1 ring-black/20"
+                      style={{ backgroundColor: c }}
+                    />
+                  ))}
+                  <label className={`${TOOL_BTN} relative cursor-pointer`} title="Renk seç">
+                    <Palette size={18} />
+                    <input
+                      type="color"
+                      value={colorNow}
+                      onChange={(e) => onCommit({ ...edit, userColor: e.target.value })}
+                      className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                    />
+                  </label>
+                  <button className={`${TOOL_BTN} text-red-600`} title="Sil" onClick={() => { setSelectedKey(null); onRemove(key); }}>
+                    <Trash2 size={18} />
+                  </button>
+                  <button className={`${TOOL_BTN} text-blue-600`} title="Bitti" onClick={() => setSelectedKey(null)}>
+                    <Check size={18} />
+                  </button>
+                </div>
+              )}
+            </Fragment>
           );
         }
 
@@ -577,7 +685,7 @@ function glyphStyle(edit: TextEdit, fontPx: number): CSSProperties {
     textRendering: "geometricPrecision",
     WebkitFontSmoothing: "antialiased",
     MozOsxFontSmoothing: "grayscale",
-    color: edit.textColor ?? "#000000",
+    color: edit.userColor ?? edit.textColor ?? "#000000",
     fontWeight: edit.bold ? 700 : undefined,
     fontStyle: edit.italic ? "italic" : undefined,
     fontFamily: edit.fontFamily ? `${edit.fontFamily}, ${editFamily(!!edit.serif)}` : editFamily(!!edit.serif),

@@ -145,10 +145,13 @@ export async function exportPdf(
               if (k > 0.25 && k < 4) size = edit.fontSize * k;
             }
           }
-          // (2) Cover the original glyphs (sized from the ORIGINAL font size so it always
-          // hides them), then (3) draw the new text at its NATURAL spacing, left-aligned.
-          // We deliberately do NOT stretch it to the box width — spreading the letters to fill
-          // a wider original box produced the "M İ L L E N İ C O M" look in the exported PDF.
+          // Manual size override (tap-to-resize on screen).
+          size *= edit.userScale ?? 1;
+          // (2) Cover the original glyphs at the ORIGINAL position/size so they stay hidden even
+          // if the new text is moved away, then (3) draw the new text at its NATURAL spacing,
+          // left-aligned, shifted by the user's position nudge. We deliberately do NOT stretch it
+          // to the box width — spreading letters to fill a wider box produced the "M İ L L E N"
+          // look in the exported PDF.
           const natural = font.widthOfTextAtSize(edit.newText, size);
           const boxW = Math.max(edit.width, natural);
           page.drawRectangle({
@@ -158,9 +161,11 @@ export async function exportPdf(
             height: edit.fontSize * 1.2,
             color: hexToRgb(edit.bgColor ?? "#ffffff", rgb),
           });
-          const color = hexToRgb(edit.textColor ?? "#000000", rgb);
+          const color = hexToRgb(edit.userColor ?? edit.textColor ?? "#000000", rgb);
+          const ux = edit.userDx ?? 0;
+          const uy = edit.userDy ?? 0;
           const drawAt = (dx: number, dy: number) =>
-            page.drawText(edit.newText, { x: edit.x + dx, y: edit.y + dy, size, font, color });
+            page.drawText(edit.newText, { x: edit.x + ux + dx, y: edit.y + uy + dy, size, font, color });
           drawAt(0, 0);
           if (fauxBold) {
             const d = size * 0.03;
@@ -174,12 +179,12 @@ export async function exportPdf(
             const lineW = boxW;
             const thickness = Math.max(0.6, edit.fontSize * 0.05);
             if (edit.underline) {
-              const y = edit.y - edit.fontSize * 0.1;
-              page.drawLine({ start: { x: edit.x, y }, end: { x: edit.x + lineW, y }, thickness, color });
+              const y = edit.y + uy - edit.fontSize * 0.1;
+              page.drawLine({ start: { x: edit.x + ux, y }, end: { x: edit.x + ux + lineW, y }, thickness, color });
             }
             if (edit.strike) {
-              const y = edit.y + edit.fontSize * 0.28;
-              page.drawLine({ start: { x: edit.x, y }, end: { x: edit.x + lineW, y }, thickness, color });
+              const y = edit.y + uy + edit.fontSize * 0.28;
+              page.drawLine({ start: { x: edit.x + ux, y }, end: { x: edit.x + ux + lineW, y }, thickness, color });
             }
           }
         } catch {

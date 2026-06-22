@@ -55,6 +55,16 @@ export interface TextEdit {
   naturalWidth?: number;
   /** Font ascent as a fraction of the em (from pdf.js), for baseline-correct overlay. */
   ascent?: number;
+  // --- Manual user overrides (set by tapping the edit and using the on-screen controls).
+  //     All optional; absent = use the auto-detected/calibrated value. The cover always stays
+  //     over the original glyphs; only the new text moves/scales/recolours.
+  /** Position nudge in PDF points: +x right, +y up. Added to x/y for the new text only. */
+  userDx?: number;
+  userDy?: number;
+  /** Manual size multiplier on the run's font size (1 = unchanged). */
+  userScale?: number;
+  /** Manual text colour "#rrggbb"; overrides the sampled `textColor`. */
+  userColor?: string;
 }
 
 /** Stable map key for a text edit. */
