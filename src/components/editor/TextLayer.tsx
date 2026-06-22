@@ -494,7 +494,7 @@ export function TextLayer({
                 textRendering: "geometricPrecision",
                 WebkitFontSmoothing: "antialiased",
                 MozOsxFontSmoothing: "grayscale",
-                wordSpacing: "0.08em",
+                wordSpacing: "0.1em",
                 ...scaleStyle(k, baselinePx),
               }}
               className="absolute z-20 box-content whitespace-nowrap border border-blue-500 bg-white px-0.5 leading-none text-black shadow-sm outline-none"
@@ -583,7 +583,7 @@ function glyphStyle(edit: TextEdit, fontPx: number): CSSProperties {
     // Static prop to the space character — the DOM renders spaces a touch narrow vs the page.
     // Em-based so it tracks the font size; NOT a box-fit/slack calc (the word lengths are
     // untouched, only the " " gets a standard typographic nudge).
-    wordSpacing: "0.08em",
+    wordSpacing: "0.1em",
     textDecorationLine: decorationLine(edit),
     // Bold weight comes from the font itself (the injected face, or the bundled bold cut via
     // font-weight). Only add a HAIRLINE stroke for faux bold (bundled fallback, no injected
