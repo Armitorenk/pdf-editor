@@ -37,6 +37,12 @@ final class PdfiumBridge {
     /** Render a loaded page into an ARGB_8888 bitmap sized to the desired output; true on success. */
     static native boolean nativeRenderPage(long page, Bitmap bitmap);
 
+    /**
+     * Enumerate a page's editable objects as a flat array, 11 doubles per object:
+     * [type, left, bottom, right, top, a, b, c, d, e, f]. Empty array if none.
+     */
+    static native double[] nativeGetObjects(long page);
+
     /** Free a loaded page. */
     static native void nativeClosePage(long page);
 

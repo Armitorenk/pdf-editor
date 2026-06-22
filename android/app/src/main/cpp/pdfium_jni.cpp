@@ -9,7 +9,9 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
+#include "fpdf_edit.h"
 #include "fpdfview.h"
 
 #define LOG_TAG "PdfEngine"
@@ -123,6 +125,54 @@ Java_com_armitorenk_pdfeditor_PdfiumBridge_nativeRenderPage(JNIEnv* env, jclass,
 
     AndroidBitmap_unlockPixels(env, bitmap);
     return JNI_TRUE;
+}
+
+// Enumerate a page's editable objects as a flat double[] with stride 11 per object:
+// [type, left, bottom, right, top, a, b, c, d, e, f]. Bounds are PDF points (lower-left origin),
+// matrix is FPDFPageObj_GetMatrix [a..f]. Returns an empty array for a page with no objects.
+JNIEXPORT jdoubleArray JNICALL
+Java_com_armitorenk_pdfeditor_PdfiumBridge_nativeGetObjects(JNIEnv* env, jclass, jlong pagePtr) {
+    auto page = reinterpret_cast<FPDF_PAGE>(pagePtr);
+    if (!page) return nullptr;
+
+    int count = FPDFPage_CountObjects(page);
+    if (count < 0) count = 0;
+
+    constexpr int stride = 11;
+    std::vector<jdouble> buf(static_cast<size_t>(count) * stride, 0.0);
+
+    for (int i = 0; i < count; ++i) {
+        FPDF_PAGEOBJECT obj = FPDFPage_GetObject(page, i);
+        jdouble* row = buf.data() + static_cast<size_t>(i) * stride;
+        if (!obj) continue;  // type stays 0 (unknown)
+
+        row[0] = static_cast<jdouble>(FPDFPageObj_GetType(obj));
+
+        float left = 0, bottom = 0, right = 0, top = 0;
+        if (FPDFPageObj_GetBounds(obj, &left, &bottom, &right, &top)) {
+            row[1] = left;
+            row[2] = bottom;
+            row[3] = right;
+            row[4] = top;
+        }
+
+        FS_MATRIX m;
+        if (FPDFPageObj_GetMatrix(obj, &m)) {
+            row[5] = m.a;
+            row[6] = m.b;
+            row[7] = m.c;
+            row[8] = m.d;
+            row[9] = m.e;
+            row[10] = m.f;
+        }
+    }
+
+    jdoubleArray arr = env->NewDoubleArray(static_cast<jsize>(buf.size()));
+    if (!arr) return nullptr;
+    if (!buf.empty()) {
+        env->SetDoubleArrayRegion(arr, 0, static_cast<jsize>(buf.size()), buf.data());
+    }
+    return arr;
 }
 
 JNIEXPORT void JNICALL

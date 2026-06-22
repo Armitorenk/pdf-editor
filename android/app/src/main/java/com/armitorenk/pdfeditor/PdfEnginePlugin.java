@@ -112,14 +112,61 @@ public class PdfEnginePlugin extends Plugin {
         }
     }
 
-    /** List a page's editable objects, Z-ordered. */
+    /** List a page's editable objects, Z-ordered (index = paint order). */
     @PluginMethod
     public void listObjects(PluginCall call) {
-        // TODO(next step): FPDFPage_CountObjects / FPDFPage_GetObject / FPDFPageObj_GetType
-        //                  / FPDFPageObj_GetBounds / FPDFPageObj_GetMatrix.
-        JSObject ret = new JSObject();
-        ret.put("objects", new JSArray());
-        call.resolve(ret);
+        Integer pageIndex = call.getInt("page");
+        if (pageIndex == null) {
+            call.reject("listObjects: missing 'page'");
+            return;
+        }
+        synchronized (this) {
+            if (docHandle == 0) {
+                call.reject("listObjects: no open document");
+                return;
+            }
+            long page = PdfiumBridge.nativeLoadPage(docHandle, pageIndex);
+            if (page == 0) {
+                call.reject("listObjects: failed to load page " + pageIndex);
+                return;
+            }
+            try {
+                double[] flat = PdfiumBridge.nativeGetObjects(page);
+                JSArray objects = new JSArray();
+                if (flat != null) {
+                    final int stride = 11;
+                    for (int i = 0; i + stride <= flat.length; i += stride) {
+                        JSObject o = new JSObject();
+                        o.put("id", i / stride);
+                        o.put("type", typeName((int) flat[i]));
+                        JSArray bounds = new JSArray();
+                        for (int k = 1; k <= 4; k++) bounds.put((Object) flat[i + k]);
+                        o.put("bounds", bounds);
+                        JSArray matrix = new JSArray();
+                        for (int k = 5; k <= 10; k++) matrix.put((Object) flat[i + k]);
+                        o.put("matrix", matrix);
+                        objects.put(o);
+                    }
+                }
+                JSObject ret = new JSObject();
+                ret.put("objects", objects);
+                call.resolve(ret);
+            } finally {
+                PdfiumBridge.nativeClosePage(page);
+            }
+        }
+    }
+
+    /** Map FPDF_PAGEOBJ_* to the TS PdfObjectType string. */
+    private static String typeName(int type) {
+        switch (type) {
+            case 1: return "text";
+            case 2: return "path";
+            case 3: return "image";
+            case 4: return "shading";
+            case 5: return "form";
+            default: return "unknown";
+        }
     }
 
     /** Release the open document and free native memory. */
