@@ -8,6 +8,7 @@ import { usePdfDocument } from "@/hooks/usePdfDocument";
 import { setHandoffPdf } from "@/lib/object/handoff";
 import { canExport, isPro, recordExport } from "@/lib/pro";
 import { Paywall } from "@/components/monetization/Paywall";
+import { AdBanner } from "@/components/monetization/AdBanner";
 import { cn } from "@/lib/utils";
 import { saveFile } from "@/lib/save";
 import { exportPdf } from "@/lib/pdf/export";
@@ -98,6 +99,9 @@ export function PdfEditor() {
   const [proTick, setProTick] = useState(0); // bump to re-read Pro/quota after a change
   void proTick;
   const pro = isPro();
+  // Native-only: the bottom banner is shown to free users on the Android app (not on the web).
+  const [native, setNative] = useState(false);
+  useEffect(() => setNative(Capacitor.isNativePlatform()), []);
 
   // --- Project library / persistence ---
   const [projectId, setProjectId] = useState<string | null>(null);
@@ -921,6 +925,8 @@ export function PdfEditor() {
           )}
         </div>
       </div>
+
+      <AdBanner show={native && !pro} />
 
       <Paywall open={paywallOpen} onClose={() => setPaywallOpen(false)} onUnlocked={() => setProTick((t) => t + 1)} />
     </div>
