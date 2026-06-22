@@ -5,15 +5,16 @@
 // matching reserved strip in the flex layout so the overlay never covers app content. Pro users
 // and the web build render nothing and show no ad.
 //
-// Uses Google's official TEST ad unit + the test App ID in AndroidManifest, so it's safe to ship
-// during development. Swap in the real AdMob App ID (manifest) + ad unit id (TODO below) before
-// release — and only then will it earn.
+// Real AdMob app + banner ids are wired in (manifest App ID + BANNER_UNIT below). While
+// AD_TESTING is true the SDK serves TEST ads regardless of the unit, so you never risk tapping
+// your own live ads. Flip AD_TESTING to false for the production/release build so real users get
+// real (revenue) ads — and never tap ads yourself on a non-test device.
 
 import { useEffect } from "react";
 import { Capacitor } from "@capacitor/core";
 
-// Google's public TEST banner ad unit (always fills, never bills). Replace with your real unit id.
-const TEST_BANNER_UNIT = "ca-app-pub-3940256099942544/6300978111";
+const BANNER_UNIT = "ca-app-pub-7701018764928268/5710436338"; // real AdMob banner unit
+const AD_TESTING = true; // ⚠️ set to false for the production/release build to serve real ads
 const BANNER_H = 56; // ~50dp standard banner + a little breathing room
 
 export function AdBanner({ show }: { show: boolean }) {
@@ -26,11 +27,11 @@ export function AdBanner({ show }: { show: boolean }) {
         await AdMob.initialize();
         if (!active) return;
         await AdMob.showBanner({
-          adId: TEST_BANNER_UNIT, // TODO(release): your real AdMob banner unit id
+          adId: BANNER_UNIT,
           adSize: BannerAdSize.BANNER,
           position: BannerAdPosition.BOTTOM_CENTER,
           margin: 0,
-          isTesting: true,
+          isTesting: AD_TESTING,
         });
       } catch (e) {
         // No ad is never fatal — the reserved strip just stays empty.
