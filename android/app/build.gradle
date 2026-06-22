@@ -1,5 +1,14 @@
 apply plugin: 'com.android.application'
 
+// Release signing. Secrets live in android/keystore.properties (gitignored) so they never land in
+// the repo; when the file is absent (CI, a fresh clone, debug-only work) release signing is simply
+// skipped and the build still works. See docs/release-signing.md.
+def keystorePropsFile = rootProject.file("keystore.properties")
+def keystoreProps = new Properties()
+if (keystorePropsFile.exists()) {
+    keystoreProps.load(new FileInputStream(keystorePropsFile))
+}
+
 android {
     namespace = "com.armitorenk.pdfeditor"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -32,10 +41,23 @@ android {
             version = "3.22.1"
         }
     }
+    signingConfigs {
+        if (keystorePropsFile.exists()) {
+            release {
+                storeFile file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
+    }
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (keystorePropsFile.exists()) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 }
