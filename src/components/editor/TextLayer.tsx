@@ -37,11 +37,6 @@ const SAMPLE_MAX_SIDE = 1400;
 // inject/calibrate — correctly sized, close match, and never the platform UI font.
 const editFamily = (serif: boolean) => (serif ? "EditorSerif, serif" : "EditorSans, sans-serif");
 
-// Optical trim. With geometricPrecision + the real font metrics back, the injected glyphs
-// read ~3% heavier/larger than the page; baking a 0.97 multiplier into the visual scale `k`
-// restores the original weight without touching layout (box stays put, only glyphs shrink).
-const OPTICAL = 0.97;
-
 // Document fonts injected into the DOM so the editor shows the run's REAL typeface.
 // Keyed by CSS family; the value is a promise that resolves true once the face loads,
 // so the calibration pass can wait for it before measuring.
@@ -351,7 +346,7 @@ export function TextLayer({
           // Pure ascent drop onto the baseline (no manual lift — the loaded font's own metrics
           // are correct); shared by `top` and the transform pivot so scaling stays on the line.
           const baselinePx = ascent * fontPx;
-          const kVis = (edit.sizeScale ?? 1) * OPTICAL; // calibration × optical trim
+          const kVis = edit.sizeScale ?? 1;
           return (
             <div
               key={textEditKey(edit.pageId, edit.itemIndex)}
@@ -371,7 +366,6 @@ export function TextLayer({
                   top: 0,
                   ...glyphStyle(edit, fontPx),
                   ...scaleStyle(kVis, baselinePx),
-                  ...spacingStyle(edit, scale, kVis),
                 }}
               >
                 {edit.newText}
@@ -408,10 +402,9 @@ export function TextLayer({
         const top = tx[5] - baselinePx;
         const widthPx = Math.max(item.width * scale, fontPx * 0.4);
         const boxHeight = fontPx * 1.25;
-        // Visual scale = calibration × optical trim. Used for the glyph transform, the input
-        // anti-scale, and the spacing math — so the box stays at its true size while the glyphs
-        // render 3% lighter. (Layout top/baseline use fontPx, never k, so they're untouched.)
-        const k = item.sizeScale * OPTICAL;
+        // Visual scale = the calibration only (PDF size used at 100%). Drives the glyph
+        // transform and the input anti-scale; layout top/baseline use fontPx, never k.
+        const k = item.sizeScale;
         const originalFamily = item.fontFamily
           ? `${item.fontFamily}, ${editFamily(item.serif)}`
           : editFamily(item.serif);
@@ -442,11 +435,6 @@ export function TextLayer({
               /* font program unavailable — export falls back to the bundled face */
             }
           }
-          // Natural advance of the new text at the CORRECTED size, in PDF points. The probe
-          // renders the injected font oversized by 1/k, so multiply the measured px back by k.
-          const fam = item.fontFamily ? `"${item.fontFamily}"` : editFamily(item.serif);
-          const wPx = measureTextPx(fam, value, 256);
-          const naturalWidth = wPx > 0 ? (wPx * item.sizeScale * pdfFontSize) / 256 : undefined;
           onCommit({
             pageId,
             itemIndex: item.itemIndex,
@@ -467,7 +455,6 @@ export function TextLayer({
             ascent: item.ascent,
             fontFamily: item.fontFamily,
             sizeScale: item.sizeScale,
-            naturalWidth,
           });
         };
 
@@ -527,7 +514,6 @@ export function TextLayer({
                   top: 0,
                   ...glyphStyle(edit, fontPx),
                   ...scaleStyle(k, baselinePx),
-                  ...spacingStyle(edit, scale, k),
                 }}
               >
                 {edit.newText}
@@ -607,38 +593,4 @@ function glyphStyle(edit: TextEdit, fontPx: number): CSSProperties {
  */
 function scaleStyle(k: number, baselinePx: number): CSSProperties {
   return Math.abs(k - 1) < 0.002 ? {} : { transform: `scale(${k})`, transformOrigin: `0 ${baselinePx}px` };
-}
-
-/**
- * Spread the slack between the run's box width and the new text's natural width so the text
- * fills its original footprint — WITHOUT touching the font size (height stays fixed, only the
- * horizontal tracking flexes). Multi-word strings put the slack into `word-spacing` (open the
- * gaps BETWEEN words, leave the letters natural); a single word puts it into `letter-spacing`
- * over the (len-1) inter-letter gaps (CSS adds a trailing gap after the last glyph, so we
- * divide by len-1 to land the last glyph exactly on the box edge). Stretch-only and capped so
- * a short replacement can't yawn. Values are local (pre-transform) → divided by k since the
- * glyph span is scaled by k.
- */
-function spacingStyle(edit: TextEdit, scale: number, k: number): CSSProperties {
-  const n = edit.naturalWidth;
-  if (n == null || !edit.width || k <= 0) return {};
-  const slackPdf = edit.width - n;
-  if (slackPdf <= 0) return {}; // text already fills/overflows — never condense
-  // A short replacement does NOT have to fill the box. If the new text's natural width is under
-  // 80% of the box, leave it left-aligned at its natural spacing — only near-original-length
-  // runs earn a millimetric nudge. This is what kept short words from yawning.
-  if (n < edit.width * 0.8) return {};
-  const chars = Array.from(edit.newText);
-  const em = edit.fontSize ?? 12;
-  const localPx = (gapPdf: number) => `${(gapPdf * scale) / k}px`;
-  const spaces = chars.filter((c) => c === " ").length;
-  if (spaces > 0) {
-    // Multi-word: open the word gaps only; cap hard at 0.15em so words never drift apart.
-    const gap = Math.min(slackPdf / spaces, em * 0.15);
-    return { wordSpacing: localPx(gap) };
-  }
-  if (chars.length < 2) return {};
-  // Single word: a whisper of inter-letter spacing, capped hard at 0.02em.
-  const gap = Math.min(slackPdf / (chars.length - 1), em * 0.02);
-  return { letterSpacing: localPx(gap) };
 }
