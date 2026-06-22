@@ -146,7 +146,9 @@ export async function exportPdf(
             }
           }
           // (2) Cover the original glyphs (sized from the ORIGINAL font size so it always
-          // hides them), then (3) draw the new text tracked to the run's box width.
+          // hides them), then (3) draw the new text at its NATURAL spacing, left-aligned.
+          // We deliberately do NOT stretch it to the box width — spreading the letters to fill
+          // a wider original box produced the "M İ L L E N İ C O M" look in the exported PDF.
           const natural = font.widthOfTextAtSize(edit.newText, size);
           const boxW = Math.max(edit.width, natural);
           page.drawRectangle({
@@ -158,14 +160,7 @@ export async function exportPdf(
           });
           const color = hexToRgb(edit.textColor ?? "#000000", rgb);
           const drawAt = (dx: number, dy: number) =>
-            drawTracked(page, edit.newText, {
-              x: edit.x + dx,
-              y: edit.y + dy,
-              size,
-              font,
-              color,
-              targetWidth: edit.width,
-            });
+            page.drawText(edit.newText, { x: edit.x + dx, y: edit.y + dy, size, font, color });
           drawAt(0, 0);
           if (fauxBold) {
             const d = size * 0.03;
@@ -259,33 +254,6 @@ function drawAnnotation(page: PDFPage, ann: Annotation, color: RGB): void {
     borderWidth: ann.strokeWidth,
     opacity: 0,
   });
-}
-
-/**
- * Draw `text` at `size`, distributing letter-spacing (tracking) so the run spans about
- * `targetWidth` points — keeping the replacement inside the original glyph box instead of
- * spilling past it. The slack is clamped so text never condenses/stretches to the point of
- * being unreadable. 1-char / degenerate runs fall back to a single `drawText`.
- */
-function drawTracked(
-  page: PDFPage,
-  text: string,
-  opts: { x: number; y: number; size: number; font: PDFFont; color: RGB; targetWidth: number },
-): void {
-  const { x, y, size, font, color, targetWidth } = opts;
-  const chars = Array.from(text);
-  const natural = font.widthOfTextAtSize(text, size);
-  if (chars.length < 2 || targetWidth <= 0 || natural <= 0) {
-    page.drawText(text, { x, y, size, font, color });
-    return;
-  }
-  let gap = (targetWidth - natural) / (chars.length - 1);
-  gap = Math.max(-size * 0.22, Math.min(size * 0.6, gap));
-  let cx = x;
-  for (const ch of chars) {
-    page.drawText(ch, { x: cx, y, size, font, color });
-    cx += font.widthOfTextAtSize(ch, size) + gap;
-  }
 }
 
 /** "#rrggbb" -> pdf-lib RGB (channels 0..1). */
