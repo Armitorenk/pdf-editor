@@ -6,8 +6,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Maximize } from "lucide-react";
-import { PdfEngine, type RenderedPage } from "@/lib/object/pdfEngine";
+import { PdfEngine, type PdfObject, type RenderedPage } from "@/lib/object/pdfEngine";
 import { base64FromBytes } from "@/lib/object/base64";
+import { boundsToBitmapRect, hitTestObject } from "@/lib/object/objectCoords";
 
 // PDFium rasterisation scale (px per PDF point). Higher = crisper bitmap; CSS transform zooms on
 // top of this. (A future refinement re-renders at the live zoom for full crispness.)
@@ -31,6 +32,8 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<View>({ scale: 1, tx: 0, ty: 0 });
+  const [objects, setObjects] = useState<PdfObject[]>([]);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef(view);
@@ -72,6 +75,13 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
         if (cancelled) return;
         setPage(rp);
         fitToWidth(rp);
+        setSelectedId(null);
+        try {
+          const res = await PdfEngine.listObjects({ page: pageIndex });
+          if (!cancelled) setObjects(res.objects);
+        } catch {
+          if (!cancelled) setObjects([]);
+        }
       } catch (e) {
         if (!cancelled) setError(msg(e));
       } finally {
@@ -103,26 +113,29 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
     startDist: 0,
     midX: 0,
     midY: 0,
+    moved: false, // pan travelled far enough to be a drag (not a tap)
+    pinched: false, // a 2-finger pinch happened in this gesture
   });
 
   function onTouchStart(e: React.TouchEvent) {
     const v = viewRef.current;
     if (e.touches.length === 1) {
       const t = e.touches[0];
-      g.current = { ...g.current, mode: "pan", startX: t.clientX, startY: t.clientY, startTx: v.tx, startTy: v.ty };
+      g.current = { ...g.current, mode: "pan", startX: t.clientX, startY: t.clientY, startTx: v.tx, startTy: v.ty, moved: false, pinched: false };
     } else if (e.touches.length >= 2) {
       const [a, b] = [e.touches[0], e.touches[1]];
       const rect = containerRef.current!.getBoundingClientRect();
       g.current = {
+        ...g.current,
         mode: "pinch",
-        startX: 0,
-        startY: 0,
         startTx: v.tx,
         startTy: v.ty,
         startScale: v.scale,
         startDist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) || 1,
         midX: (a.clientX + b.clientX) / 2 - rect.left,
         midY: (a.clientY + b.clientY) / 2 - rect.top,
+        pinched: true,
+        moved: true,
       };
     }
   }
@@ -131,6 +144,7 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
     const s = g.current;
     if (s.mode === "pan" && e.touches.length === 1) {
       const t = e.touches[0];
+      if (!s.moved && Math.hypot(t.clientX - s.startX, t.clientY - s.startY) > 8) s.moved = true;
       setView((v) => ({ ...v, tx: s.startTx + (t.clientX - s.startX), ty: s.startTy + (t.clientY - s.startY) }));
     } else if (s.mode === "pinch" && e.touches.length >= 2) {
       const [a, b] = [e.touches[0], e.touches[1]];
@@ -144,8 +158,11 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
   }
 
   function onTouchEnd(e: React.TouchEvent) {
+    const s = g.current;
     if (e.touches.length === 0) {
-      g.current.mode = "none";
+      // a clean single tap (no pan travel, no pinch) selects the object under the finger
+      if (s.mode === "pan" && !s.moved && !s.pinched) handleTap(s.startX, s.startY);
+      s.mode = "none";
     } else if (e.touches.length === 1) {
       // a finger lifted from a pinch — resume panning with the remaining one
       const t = e.touches[0];
@@ -154,8 +171,21 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
     }
   }
 
+  // Map a tapped screen point into bitmap px and select the topmost object there (or deselect).
+  function handleTap(clientX: number, clientY: number) {
+    const el = containerRef.current;
+    if (!el || !page) return;
+    const rect = el.getBoundingClientRect();
+    const v = viewRef.current;
+    const bx = (clientX - rect.left - v.tx) / v.scale;
+    const by = (clientY - rect.top - v.ty) / v.scale;
+    const hit = hitTestObject(objects, page, bx, by);
+    setSelectedId(hit ? hit.id : null);
+  }
+
   const canPrev = pageIndex > 0;
   const canNext = pageIndex < pages - 1;
+  const selectedObj = selectedId != null ? objects.find((o) => o.id === selectedId) ?? null : null;
 
   return (
     <div className="relative h-full w-full">
@@ -185,10 +215,35 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
               draggable={false}
               className="block select-none shadow-md"
             />
-            {/* Object overlay (selection box / handles) will mount here in Adım 3–4 — same coord space. */}
           </div>
         )}
       </div>
+
+      {/* selection bounding box (screen space, recomputed from the view transform) */}
+      {page && selectedObj && (() => {
+        const r = boundsToBitmapRect(selectedObj.bounds, page);
+        const sl = view.tx + r.left * view.scale;
+        const st = view.ty + r.top * view.scale;
+        const sw = Math.max(2, r.width * view.scale);
+        const sh = Math.max(2, r.height * view.scale);
+        return (
+          <div
+            className="pointer-events-none absolute z-10 border-2 border-blue-500 bg-blue-500/5"
+            style={{ left: sl, top: st, width: sw, height: sh }}
+          >
+            <span className="absolute -top-5 left-0 whitespace-nowrap rounded bg-blue-500 px-1 text-[10px] font-medium text-white">
+              {selectedObj.type} #{selectedObj.id}
+            </span>
+          </div>
+        );
+      })()}
+
+      {/* hint: object count + how to select */}
+      {!loading && objects.length > 0 && (
+        <div className="pointer-events-none absolute left-2 top-2 z-10 rounded bg-black/55 px-2 py-1 text-[11px] text-white">
+          {objects.length} nesne · dokunup seç
+        </div>
+      )}
 
       {loading && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
