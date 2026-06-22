@@ -250,6 +250,56 @@ public class PdfEnginePlugin extends Plugin {
         }
     }
 
+    /** Move an object to front/back (Z-order); resolves the object's new index. */
+    @PluginMethod
+    public void reorderObject(PluginCall call) {
+        Integer page = call.getInt("page");
+        Integer index = call.getInt("index");
+        Boolean toFront = call.getBoolean("toFront", true);
+        if (page == null || index == null) {
+            call.reject("reorderObject: missing page/index");
+            return;
+        }
+        synchronized (this) {
+            if (docHandle == 0) { call.reject("reorderObject: no open document"); return; }
+            int ni = PdfiumBridge.nativeReorderObject(docHandle, page, index, toFront != null && toFront);
+            if (ni < 0) { call.reject("reorderObject: failed"); return; }
+            JSObject ret = new JSObject();
+            ret.put("index", ni);
+            call.resolve(ret);
+        }
+    }
+
+    /** Add an image object from base64 RGBA pixels (used to duplicate); resolves its index. */
+    @PluginMethod
+    public void addImage(PluginCall call) {
+        Integer page = call.getInt("page");
+        String rgbaB64 = call.getString("rgba");
+        Integer w = call.getInt("width");
+        Integer h = call.getInt("height");
+        if (page == null || rgbaB64 == null || w == null || h == null) {
+            call.reject("addImage: missing page/rgba/width/height");
+            return;
+        }
+        double a = call.getDouble("a", 1.0), b = call.getDouble("b", 0.0), c = call.getDouble("c", 0.0);
+        double d = call.getDouble("d", 1.0), e = call.getDouble("e", 0.0), f = call.getDouble("f", 0.0);
+        byte[] rgba;
+        try {
+            rgba = Base64.decode(rgbaB64, Base64.DEFAULT);
+        } catch (IllegalArgumentException ex) {
+            call.reject("addImage: invalid rgba base64", ex);
+            return;
+        }
+        synchronized (this) {
+            if (docHandle == 0) { call.reject("addImage: no open document"); return; }
+            int ni = PdfiumBridge.nativeAddImage(docHandle, page, rgba, w, h, a, b, c, d, e, f);
+            if (ni < 0) { call.reject("addImage: failed"); return; }
+            JSObject ret = new JSObject();
+            ret.put("index", ni);
+            call.resolve(ret);
+        }
+    }
+
     /** Serialise the edited document to base64 PDF bytes. */
     @PluginMethod
     public void saveDocument(PluginCall call) {

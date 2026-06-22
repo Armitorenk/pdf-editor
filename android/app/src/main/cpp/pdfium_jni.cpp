@@ -278,6 +278,78 @@ static int WriteBlockToVector(FPDF_FILEWRITE* pThis, const void* data, unsigned 
     return 1;
 }
 
+// Change Z-order: remove the object and re-insert it at the front (append) or back (index 0).
+// Returns the object's new index, or -1 on failure.
+JNIEXPORT jint JNICALL
+Java_com_armitorenk_pdfeditor_PdfiumBridge_nativeReorderObject(JNIEnv*, jclass, jlong handle,
+        jint pageIndex, jint objIndex, jboolean toFront) {
+    auto* h = reinterpret_cast<DocHandle*>(handle);
+    if (!h || !h->doc) return -1;
+    FPDF_PAGE page = FPDF_LoadPage(h->doc, pageIndex);
+    if (!page) return -1;
+    jint newIndex = -1;
+    const int count = FPDFPage_CountObjects(page);
+    FPDF_PAGEOBJECT obj = FPDFPage_GetObject(page, objIndex);
+    if (obj && FPDFPage_RemoveObject(page, obj)) {
+        if (toFront) {
+            FPDFPage_InsertObject(page, obj);  // append = painted last = on top
+            newIndex = count - 1;
+        } else {
+            FPDFPage_InsertObjectAtIndex(page, obj, 0);  // index 0 = painted first = at back
+            newIndex = 0;
+        }
+        FPDFPage_GenerateContent(page);
+    }
+    FPDF_ClosePage(page);
+    return newIndex;
+}
+
+// Add a new image object from raw RGBA pixels at matrix [a,b,c,d,e,f] (used for duplicate).
+// Returns the new object's index, or -1 on failure.
+JNIEXPORT jint JNICALL
+Java_com_armitorenk_pdfeditor_PdfiumBridge_nativeAddImage(JNIEnv* env, jclass, jlong handle,
+        jint pageIndex, jbyteArray rgba, jint w, jint h,
+        jdouble a, jdouble b, jdouble c, jdouble d, jdouble e, jdouble f) {
+    auto* hh = reinterpret_cast<DocHandle*>(handle);
+    if (!hh || !hh->doc || w <= 0 || h <= 0) return -1;
+    FPDF_PAGE page = FPDF_LoadPage(hh->doc, pageIndex);
+    if (!page) return -1;
+
+    jint newIndex = -1;
+    FPDF_PAGEOBJECT img = FPDFPageObj_NewImageObj(hh->doc);
+    FPDF_BITMAP bmp = FPDFBitmap_CreateEx(w, h, FPDFBitmap_BGRA, nullptr, 0);
+    if (img && bmp) {
+        auto* dst = static_cast<uint8_t*>(FPDFBitmap_GetBuffer(bmp));
+        const int stride = FPDFBitmap_GetStride(bmp);
+        jbyte* src = env->GetByteArrayElements(rgba, nullptr);
+        const jsize srcLen = env->GetArrayLength(rgba);
+        if (dst && src && srcLen >= static_cast<jsize>(w) * h * 4) {
+            const auto* s0 = reinterpret_cast<const uint8_t*>(src);
+            for (int y = 0; y < h; ++y) {
+                for (int x = 0; x < w; ++x) {
+                    const uint8_t* s = s0 + (static_cast<size_t>(y) * w + x) * 4;       // RGBA
+                    uint8_t* dp = dst + static_cast<size_t>(y) * stride + static_cast<size_t>(x) * 4;  // BGRA
+                    dp[0] = s[2];
+                    dp[1] = s[1];
+                    dp[2] = s[0];
+                    dp[3] = s[3];
+                }
+            }
+        }
+        if (src) env->ReleaseByteArrayElements(rgba, src, JNI_ABORT);
+        FPDFImageObj_SetBitmap(nullptr, 0, img, bmp);
+        FS_MATRIX m = { static_cast<float>(a), static_cast<float>(b), static_cast<float>(c),
+                        static_cast<float>(d), static_cast<float>(e), static_cast<float>(f) };
+        FPDFPageObj_SetMatrix(img, &m);
+        newIndex = FPDFPage_CountObjects(page);  // appended -> this index
+        FPDFPage_InsertObject(page, img);
+        FPDFPage_GenerateContent(page);
+    }
+    if (bmp) FPDFBitmap_Destroy(bmp);
+    FPDF_ClosePage(page);
+    return newIndex;
+}
+
 JNIEXPORT jbyteArray JNICALL
 Java_com_armitorenk_pdfeditor_PdfiumBridge_nativeSaveDocument(JNIEnv* env, jclass, jlong handle) {
     auto* h = reinterpret_cast<DocHandle*>(handle);

@@ -3,6 +3,7 @@
 import { FileText, FileUp, Trash2 } from "lucide-react";
 import type { ProjectMeta } from "@/lib/projects";
 import { cn } from "@/lib/utils";
+import { ObjectEditorLink } from "@/components/object/ObjectEditorLink";
 
 interface ProjectLibraryProps {
   projects: ProjectMeta[];
@@ -44,6 +45,8 @@ export function ProjectLibrary({
         {error && (
           <p className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{error}</p>
         )}
+
+        <ObjectEditorLink />
 
         <div className="mt-8">
           <h2 className="mb-3 px-1 text-sm font-semibold uppercase tracking-wide text-neutral-500">

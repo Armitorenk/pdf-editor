@@ -7,7 +7,21 @@
 // re-rendered. Native-only (PDFium).
 
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronLeft, ChevronRight, Maximize, Palette, Pencil, RotateCw, Trash2 } from "lucide-react";
+import {
+  ArrowDownToLine,
+  ArrowUpToLine,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  Maximize,
+  Palette,
+  Pencil,
+  Redo2,
+  RotateCw,
+  Trash2,
+  Undo2,
+} from "lucide-react";
 import { PdfEngine, type PdfObject, type RenderedPage } from "@/lib/object/pdfEngine";
 import { base64FromBytes } from "@/lib/object/base64";
 import { boundsToBitmapRect, hitTestObject, pageScale } from "@/lib/object/objectCoords";
@@ -35,6 +49,29 @@ type Preview = ScreenRect & { rotDeg: number };
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+// Crop a region of a (PNG data-URL) bitmap into raw RGBA bytes — used to duplicate an object as
+// a new raster image. `s*` are source px in the bitmap, `d*` the output size.
+function cropToRgba(dataUrl: string, sx: number, sy: number, sw: number, sh: number, dw: number, dh: number): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = dw;
+      canvas.height = dh;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        reject(new Error("no 2d context"));
+        return;
+      }
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, dw, dh);
+      const d = ctx.getImageData(0, 0, dw, dh).data;
+      resolve(new Uint8Array(d.buffer.slice(0)));
+    };
+    img.onerror = () => reject(new Error("crop image load failed"));
+    img.src = dataUrl;
+  });
+}
 const BTN = "flex h-10 w-10 items-center justify-center rounded-md hover:bg-neutral-100 active:bg-neutral-200";
 
 export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
@@ -49,6 +86,10 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [textInput, setTextInput] = useState<{ value: string } | null>(null);
+  // Undo/redo: snapshot the whole doc (base64) before each edit; restore by reopening.
+  const [histVer, setHistVer] = useState(0);
+  const undoRef = useRef<string[]>([]);
+  const redoRef = useRef<string[]>([]);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef(view);
@@ -61,6 +102,9 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
     setLoading(true);
     setError(null);
     setPage(null);
+    undoRef.current = [];
+    redoRef.current = [];
+    setHistVer(0);
     (async () => {
       try {
         const { pages } = await PdfEngine.openDoc({ data: base64FromBytes(bytes) });
@@ -211,6 +255,8 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
   const canPrev = pageIndex > 0;
   const canNext = pageIndex < pages - 1;
   const selectedObj = selectedId != null ? objects.find((o) => o.id === selectedId) ?? null : null;
+  const canUndo = histVer >= 0 && undoRef.current.length > 0; // histVer forces this to recompute
+  const canRedo = redoRef.current.length > 0;
 
   // Base (unrotated) screen rect of the selection, recomputed from the view transform each render.
   const baseSelRect: ScreenRect | null =
@@ -354,10 +400,106 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
 
     setBusy(true);
     try {
+      await beforeEdit();
       await PdfEngine.transformObject({ page: pageIndex, index: selectedId, a: m[0], b: m[1], c: m[2], d: m[3], e: m[4], f: m[5] });
       await refresh(selectedId);
     } catch (err) {
       setError(msg(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Snapshot the document before a mutating edit, for undo. (saveDocument serialises the whole
+  // doc; cheap enough per edit, robust for every op type incl. delete/colour.)
+  async function beforeEdit() {
+    try {
+      const { data } = await PdfEngine.saveDocument();
+      undoRef.current.push(data);
+      if (undoRef.current.length > 20) undoRef.current.shift();
+      redoRef.current = [];
+      setHistVer((v) => v + 1);
+    } catch {
+      /* snapshot failed — this op just won't be undoable */
+    }
+  }
+
+  async function undo() {
+    if (!undoRef.current.length) return;
+    setBusy(true);
+    try {
+      const { data: cur } = await PdfEngine.saveDocument();
+      redoRef.current.push(cur);
+      const prev = undoRef.current.pop()!;
+      await PdfEngine.openDoc({ data: prev });
+      await refresh(null);
+      setHistVer((v) => v + 1);
+    } catch (e) {
+      setError(msg(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function redo() {
+    if (!redoRef.current.length) return;
+    setBusy(true);
+    try {
+      const { data: cur } = await PdfEngine.saveDocument();
+      undoRef.current.push(cur);
+      const next = redoRef.current.pop()!;
+      await PdfEngine.openDoc({ data: next });
+      await refresh(null);
+      setHistVer((v) => v + 1);
+    } catch (e) {
+      setError(msg(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Z-order: bring the selected object to front / send to back.
+  async function doReorder(toFront: boolean) {
+    if (selectedId == null) return;
+    setBusy(true);
+    try {
+      await beforeEdit();
+      const { index } = await PdfEngine.reorderObject({ page: pageIndex, index: selectedId, toFront });
+      await refresh(index);
+    } catch (e) {
+      setError(msg(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Duplicate: rasterise the object's region and insert it as a new image, nudged by a few points.
+  async function doDuplicate() {
+    if (!page || selectedId == null || !selectedObj) return;
+    setBusy(true);
+    try {
+      await beforeEdit();
+      const rect = boundsToBitmapRect(selectedObj.bounds, page);
+      const cw = Math.max(1, Math.round(rect.width));
+      const ch = Math.max(1, Math.round(rect.height));
+      const rgba = await cropToRgba(`data:image/png;base64,${page.data}`, rect.left, rect.top, rect.width, rect.height, cw, ch);
+      const [l, b, r2, t] = selectedObj.bounds;
+      const off = 12;
+      const res = await PdfEngine.addImage({
+        page: pageIndex,
+        rgba: base64FromBytes(rgba),
+        width: cw,
+        height: ch,
+        a: r2 - l,
+        b: 0,
+        c: 0,
+        d: t - b,
+        e: l + off,
+        f: b + off,
+      });
+      await refresh(res.index);
+    } catch (e) {
+      setError(msg(e));
     } finally {
       setBusy(false);
     }
@@ -368,6 +510,7 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
     if (selectedId == null) return;
     setBusy(true);
     try {
+      await beforeEdit();
       await PdfEngine.transformObject({ page: pageIndex, index: selectedId, a: m[0], b: m[1], c: m[2], d: m[3], e: m[4], f: m[5] });
       await refresh(selectedId);
     } catch (e) {
@@ -381,6 +524,7 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
     if (selectedId == null) return;
     setBusy(true);
     try {
+      await beforeEdit();
       await PdfEngine.setObjectColor({ page: pageIndex, index: selectedId, color: hex });
       await refresh(selectedId);
     } catch (e) {
@@ -394,6 +538,7 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
     if (selectedId == null) return;
     setBusy(true);
     try {
+      await beforeEdit();
       await PdfEngine.deleteObject({ page: pageIndex, index: selectedId });
       await refresh(null); // indices shift after a delete → drop the selection
     } catch (e) {
@@ -407,6 +552,7 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
     if (selectedId == null) return;
     setBusy(true);
     try {
+      await beforeEdit();
       await PdfEngine.setObjectText({ page: pageIndex, index: selectedId, text });
       await refresh(selectedId);
       setTextInput(null);
@@ -510,12 +656,21 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
               <span className="text-xs font-medium text-neutral-700">
                 {selectedObj.type} #{selectedObj.id}
               </span>
-              <div className="flex items-center gap-1">
+              <div className="flex flex-wrap items-center justify-end gap-1">
                 {selectedObj.type === "text" && (
                   <button className={BTN} title="Metni değiştir" onClick={() => setTextInput({ value: "" })}>
                     <Pencil size={18} />
                   </button>
                 )}
+                <button className={BTN} title="Öne getir" onClick={() => doReorder(true)}>
+                  <ArrowUpToLine size={18} />
+                </button>
+                <button className={BTN} title="Arkaya gönder" onClick={() => doReorder(false)}>
+                  <ArrowDownToLine size={18} />
+                </button>
+                <button className={BTN} title="Kopyala" onClick={doDuplicate}>
+                  <Copy size={18} />
+                </button>
                 <button className={`${BTN} text-red-600`} title="Sil" onClick={doDelete}>
                   <Trash2 size={18} />
                 </button>
@@ -573,6 +728,28 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
           </button>
           <button className="rounded px-2 py-1 text-sm text-neutral-600" onClick={() => setTextInput(null)}>
             İptal
+          </button>
+        </div>
+      )}
+
+      {/* undo / redo */}
+      {(canUndo || canRedo) && (
+        <div className="absolute right-2 top-2 z-30 flex gap-1">
+          <button
+            onClick={undo}
+            disabled={!canUndo}
+            aria-label="Geri al"
+            className="flex h-9 w-9 items-center justify-center rounded-full bg-black/55 text-white shadow disabled:opacity-30"
+          >
+            <Undo2 size={18} />
+          </button>
+          <button
+            onClick={redo}
+            disabled={!canRedo}
+            aria-label="Yinele"
+            className="flex h-9 w-9 items-center justify-center rounded-full bg-black/55 text-white shadow disabled:opacity-30"
+          >
+            <Redo2 size={18} />
           </button>
         </div>
       )}

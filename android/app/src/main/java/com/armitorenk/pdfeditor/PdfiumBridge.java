@@ -56,6 +56,11 @@ final class PdfiumBridge {
     static native boolean nativeSetText(long handle, int pageIndex, int objIndex, String text);
     /** Remove the object from the page. */
     static native boolean nativeDeleteObject(long handle, int pageIndex, int objIndex);
+    /** Move the object to front (append) or back (index 0); returns its new index, or -1. */
+    static native int nativeReorderObject(long handle, int pageIndex, int objIndex, boolean toFront);
+    /** Add a new image object from RGBA pixels at matrix [a..f]; returns its index, or -1. */
+    static native int nativeAddImage(long handle, int pageIndex, byte[] rgba, int w, int h,
+            double a, double b, double c, double d, double e, double f);
     /** Serialise the (edited) document to PDF bytes. */
     static native byte[] nativeSaveDocument(long handle);
 

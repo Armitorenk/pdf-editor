@@ -59,6 +59,21 @@ export interface PdfEnginePlugin {
   setObjectText(options: { page: number; index: number; text: string }): Promise<void>;
   /** Delete an object; object indices shift afterwards, so re-list the page. */
   deleteObject(options: { page: number; index: number }): Promise<void>;
+  /** Move an object to front/back (Z-order); resolves its new index. */
+  reorderObject(options: { page: number; index: number; toFront: boolean }): Promise<{ index: number }>;
+  /** Add an image object from base64 RGBA pixels (used to duplicate); resolves its index. */
+  addImage(options: {
+    page: number;
+    rgba: string;
+    width: number;
+    height: number;
+    a: number;
+    b: number;
+    c: number;
+    d: number;
+    e: number;
+    f: number;
+  }): Promise<{ index: number }>;
   /** Serialise the edited document to a base64 PDF. */
   saveDocument(): Promise<{ data: string }>;
   /** Release the open document and free native memory. */
