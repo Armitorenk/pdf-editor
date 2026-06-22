@@ -38,9 +38,20 @@ const SAMPLE_MAX_SIDE = 1400;
 // inject/calibrate — correctly sized, close match, and never the platform UI font.
 const editFamily = (serif: boolean) => (serif ? "EditorSerif, serif" : "EditorSans, sans-serif");
 
-// --- Manual edit controls (tap an edited run -> move / resize / recolour / spacing) ---
+// --- Manual edit controls (tap a run -> move / resize / recolour / spacing) ---
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
 const clampUserScale = (n: number) => clamp(n, 0.2, 5);
+// True when the user has actually changed something on an edit (vs. a no-op "seed" created just
+// by tapping an original run to select it). Seeds whose text still equals the original AND carry
+// no overrides are dropped again when the selection moves away (see the cleanup effect).
+const hasOverrides = (e?: TextEdit) =>
+  !!e &&
+  (e.userDx != null ||
+    e.userDy != null ||
+    e.userScale != null ||
+    e.userColor != null ||
+    e.userLetterSpacing != null ||
+    e.userWordSpacing != null);
 // Base word-spacing nudge baked into the on-screen glyphs (the WebView paints spaces a hair
 // narrow); the user's adjustment is added on top of this.
 const BASE_WORD_SPACING_EM = 0.16;
@@ -231,6 +242,19 @@ export function TextLayer({
       onCommit({ ...edit, userDx: (edit.userDx ?? 0) + dx, userDy: (edit.userDy ?? 0) + dy });
     }
   }
+
+  // When the selection moves away from a run, drop a still-untouched seed (one created just by
+  // tapping the run to inspect it) so merely browsing never litters the document with no-op edits.
+  const prevSelRef = useRef<string | null>(null);
+  useEffect(() => {
+    const prev = prevSelRef.current;
+    if (prev && prev !== selectedKey) {
+      const e = edits[prev];
+      if (e && e.newText === e.originalText && !hasOverrides(e)) onRemove(prev);
+    }
+    prevSelRef.current = selectedKey;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedKey]);
 
   // Detect text runs once per page — only needed while editing.
   useEffect(() => {
@@ -453,19 +477,14 @@ export function TextLayer({
         // PDF-space font size (zoom-independent), captured for export.
         const pdfFontSize = Math.hypot(item.transform[2], item.transform[3]);
 
-        const commit = (value: string) => {
-          setEditingKey(null);
-          if (value === item.str) {
-            onRemove(key);
-            return;
-          }
-          // Sample the page so the edit blends in (real bg colour + ink colour). Style
-          // (bold/italic/serif) was already resolved from the font metadata.
+        // Build the full edit for a replacement string: sample the page so it blends in (real
+        // bg + ink colour), capture the run's font program for reuse on export, and preserve any
+        // manual overrides already applied. Style (bold/italic/serif) came from the font metadata.
+        const buildEdit = (value: string): TextEdit => {
           const sample = sampleRef.current;
           const runBox = { x: item.transform[4], y: item.transform[5], width: item.width, fontSize: pdfFontSize };
           const colors = sample ? sampleRunColors(sample, runBox) : undefined;
           const deco = sample ? detectDecorations(sample, runBox) : undefined;
-          // Capture the run's original (converted) font program so export can reuse it.
           if (item.psName && item.fontName && pageRef.current) {
             try {
               const fo = pageRef.current.commonObjs.has(item.fontName)
@@ -476,7 +495,7 @@ export function TextLayer({
               /* font program unavailable — export falls back to the bundled face */
             }
           }
-          onCommit({
+          return {
             pageId,
             itemIndex: item.itemIndex,
             originalText: item.str,
@@ -496,15 +515,31 @@ export function TextLayer({
             ascent: item.ascent,
             fontFamily: item.fontFamily,
             sizeScale: item.sizeScale,
-            // Keep any manual move/size/colour/spacing the user already applied to this run.
             userDx: edit?.userDx,
             userDy: edit?.userDy,
             userScale: edit?.userScale,
             userColor: edit?.userColor,
             userLetterSpacing: edit?.userLetterSpacing,
             userWordSpacing: edit?.userWordSpacing,
-          });
-          // Select the just-edited run so its tune toolbar appears right below it (discoverable).
+          };
+        };
+
+        // Tap a run (edited or not) → select it and show the property panel. Seeding a no-op
+        // edit (newText === original) lets the user tweak size/colour/spacing/position of text
+        // they have NOT retyped; an untouched seed is dropped again when the selection moves away.
+        const selectRun = () => {
+          if (!edit) onCommit(buildEdit(item.str));
+          setSelectedKey(key);
+        };
+
+        // Commit a typed replacement. Clearing it back to the original with no overrides removes it.
+        const commitText = (value: string) => {
+          setEditingKey(null);
+          if (value === item.str && !hasOverrides(edit)) {
+            if (edit) onRemove(key);
+            return;
+          }
+          onCommit(buildEdit(value));
           setSelectedKey(key);
         };
 
@@ -514,7 +549,7 @@ export function TextLayer({
               key={key}
               autoFocus
               defaultValue={edit?.newText ?? item.str}
-              onBlur={(e) => commit(e.target.value)}
+              onBlur={(e) => commitText(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
@@ -569,9 +604,8 @@ export function TextLayer({
                 className="pointer-events-none absolute z-10 box-content"
               />
               <div
-                onClick={() => {
-                  if (!isSelected) setSelectedKey(key);
-                }}
+                onClick={() => setSelectedKey(key)}
+                onDoubleClick={() => setEditingKey(key)}
                 onPointerDown={(e) => onTextPointerDown(e, key)}
                 onPointerMove={onTextPointerMove}
                 onPointerUp={onTextPointerUp}
@@ -599,10 +633,12 @@ export function TextLayer({
                   {edit.newText}
                 </span>
               </div>
-              {/* alignment guides + coordinate badge while dragging to reposition */}
+              {/* ruler guides (left + right edges and the baseline) + a live x/y badge while
+                  dragging to reposition, so the run is easy to align to a margin */}
               {isSelected && sh && (
                 <Fragment>
                   <div className="pointer-events-none absolute bottom-0 top-0 z-20 border-l border-dashed border-blue-500/60" style={{ left: textLeft }} />
+                  <div className="pointer-events-none absolute bottom-0 top-0 z-20 border-l border-dashed border-blue-500/60" style={{ left: textLeft + widthPx }} />
                   <div className="pointer-events-none absolute left-0 right-0 z-20 border-t border-dashed border-blue-500/60" style={{ top: textTop + baselinePx }} />
                   <div
                     className="pointer-events-none absolute z-30 whitespace-nowrap rounded bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium text-white"
@@ -614,55 +650,58 @@ export function TextLayer({
               )}
               {isSelected && !sh && (
                 <div
-                  className="absolute z-30 flex max-w-[92vw] flex-wrap items-center gap-1 rounded-lg bg-white p-1.5 shadow-lg ring-1 ring-black/10"
+                  className="absolute z-30 flex max-w-[94vw] flex-col gap-2 rounded-xl border border-black/10 bg-white/95 p-2 shadow-xl backdrop-blur"
                   style={{ left: Math.max(2, textLeft), top: toolbarTop }}
                   onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
                 >
-                  <button className={TOOL_BTN} title="Metni düzenle" onClick={() => { setSelectedKey(null); setEditingKey(key); }}>
-                    <Pencil size={18} />
-                  </button>
-                  <NumberField
-                    label="boyut"
-                    suffix="pt"
-                    value={edit.fontSize * (edit.userScale ?? 1)}
-                    decimals={1}
-                    step={0.5}
-                    min={edit.fontSize * 0.2}
-                    max={edit.fontSize * 5}
-                    onChange={(pt) => onCommit({ ...edit, userScale: clampUserScale(pt / edit.fontSize) })}
-                  />
-                  <NumberField
-                    label="harf"
-                    suffix="em"
-                    value={edit.userLetterSpacing ?? 0}
-                    decimals={2}
-                    step={0.02}
-                    min={-0.2}
-                    max={1}
-                    onChange={(em) => onCommit({ ...edit, userLetterSpacing: em })}
-                  />
-                  <NumberField
-                    label="kelime"
-                    suffix="em"
-                    value={edit.userWordSpacing ?? 0}
-                    decimals={2}
-                    step={0.05}
-                    min={-0.2}
-                    max={2}
-                    onChange={(em) => onCommit({ ...edit, userWordSpacing: em })}
-                  />
-                  <div className="flex shrink-0 items-center gap-0.5">
+                  {/* numeric properties */}
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <NumberField
+                      label="Size"
+                      suffix="pt"
+                      value={edit.fontSize * (edit.userScale ?? 1)}
+                      decimals={1}
+                      step={0.5}
+                      min={edit.fontSize * 0.2}
+                      max={edit.fontSize * 5}
+                      onChange={(pt) => onCommit({ ...edit, userScale: clampUserScale(pt / edit.fontSize) })}
+                    />
+                    <NumberField
+                      label="Letter"
+                      suffix="em"
+                      value={edit.userLetterSpacing ?? 0}
+                      decimals={2}
+                      step={0.02}
+                      min={-0.2}
+                      max={1}
+                      onChange={(em) => onCommit({ ...edit, userLetterSpacing: em })}
+                    />
+                    <NumberField
+                      label="Word"
+                      suffix="em"
+                      value={edit.userWordSpacing ?? 0}
+                      decimals={2}
+                      step={0.05}
+                      min={-0.2}
+                      max={2}
+                      onChange={(em) => onCommit({ ...edit, userWordSpacing: em })}
+                    />
+                  </div>
+                  {/* colour + actions */}
+                  <div className="flex items-center gap-1">
+                    <span className="pr-0.5 text-[10px] text-neutral-500">Color</span>
                     {SWATCHES.map((c) => (
                       <button
                         key={c}
                         title={c}
                         onClick={() => onCommit({ ...edit, userColor: c })}
-                        className="h-7 w-7 shrink-0 rounded-full ring-1 ring-black/20"
+                        className="h-6 w-6 shrink-0 rounded-full ring-1 ring-black/20"
                         style={{ backgroundColor: c }}
                       />
                     ))}
-                    <label className={`${TOOL_BTN} relative cursor-pointer`} title="Renk seç">
-                      <Palette size={18} />
+                    <label className={`${TOOL_BTN} relative shrink-0 cursor-pointer`} title="Custom color">
+                      <Palette size={16} />
                       <input
                         type="color"
                         value={colorNow}
@@ -670,13 +709,17 @@ export function TextLayer({
                         className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
                       />
                     </label>
+                    <div className="mx-1 h-6 w-px bg-neutral-200" />
+                    <button className={TOOL_BTN} title="Edit text" onClick={() => setEditingKey(key)}>
+                      <Pencil size={16} />
+                    </button>
+                    <button className={`${TOOL_BTN} text-red-600`} title="Delete" onClick={() => { setSelectedKey(null); onRemove(key); }}>
+                      <Trash2 size={16} />
+                    </button>
+                    <button className={`${TOOL_BTN} text-blue-600`} title="Done" onClick={() => setSelectedKey(null)}>
+                      <Check size={16} />
+                    </button>
                   </div>
-                  <button className={`${TOOL_BTN} text-red-600`} title="Sil" onClick={() => { setSelectedKey(null); onRemove(key); }}>
-                    <Trash2 size={18} />
-                  </button>
-                  <button className={`${TOOL_BTN} text-blue-600`} title="Bitti" onClick={() => setSelectedKey(null)}>
-                    <Check size={18} />
-                  </button>
                 </div>
               )}
             </Fragment>
@@ -684,13 +727,16 @@ export function TextLayer({
         }
 
         // Unedited run: a transparent hit-box at the original layout (no text, no scale).
+        // Tap selects it (so its size/colour/position can be tuned without retyping); double-tap
+        // jumps straight into editing the string.
         return (
           <button
             key={key}
-            onClick={() => setEditingKey(key)}
+            onClick={selectRun}
+            onDoubleClick={() => setEditingKey(key)}
             title={item.str}
             style={{ left, top, minWidth: widthPx, height: boxHeight }}
-            className="absolute z-10 box-content cursor-text rounded-sm hover:bg-blue-400/20 hover:ring-1 hover:ring-blue-400"
+            className="absolute z-10 box-content cursor-pointer rounded-sm hover:bg-blue-400/20 hover:ring-1 hover:ring-blue-400"
           />
         );
       })}
@@ -728,7 +774,7 @@ function NumberField({
   return (
     <div className="flex shrink-0 items-center gap-0.5">
       <span className="px-0.5 text-[10px] leading-none text-neutral-500">{label}</span>
-      <button className={TOOL_BTN_SM} title={`${label} azalt`} onClick={() => set(value - step)}>
+      <button className={TOOL_BTN_SM} title={`${label} -`} onClick={() => set(value - step)}>
         <Minus size={14} />
       </button>
       <input
@@ -746,7 +792,7 @@ function NumberField({
         }}
         className="w-11 rounded border border-neutral-300 px-1 py-1 text-center text-xs tabular-nums outline-none focus:border-blue-500"
       />
-      <button className={TOOL_BTN_SM} title={`${label} artır`} onClick={() => set(value + step)}>
+      <button className={TOOL_BTN_SM} title={`${label} +`} onClick={() => set(value + step)}>
         <Plus size={14} />
       </button>
       {suffix && <span className="pr-0.5 text-[10px] text-neutral-400">{suffix}</span>}

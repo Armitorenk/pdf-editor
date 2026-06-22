@@ -35,10 +35,10 @@ export default function ObjectEditorPage() {
       const arr = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
       const blob = new Blob([arr], { type: "application/pdf" });
-      const outName = (name.replace(/\.pdf$/i, "") || "duzenlenmis") + "-edited.pdf";
+      const outName = (name.replace(/\.pdf$/i, "") || "document") + "-edited.pdf";
       await saveFile(outName, blob);
     } catch (e) {
-      alert("Kaydetme hatası: " + (e instanceof Error ? e.message : String(e)));
+      alert("Save failed: " + (e instanceof Error ? e.message : String(e)));
     } finally {
       setSaving(false);
     }
@@ -48,9 +48,9 @@ export default function ObjectEditorPage() {
     <main className="flex h-dvh flex-col pt-safe">
       <header className="flex items-center justify-between gap-2 border-b border-neutral-200 px-3 py-2">
         <Link href="/" className="text-sm text-blue-600">
-          ← Geri
+          ← Back
         </Link>
-        <span className="min-w-0 flex-1 truncate text-center text-sm font-medium">{name || "Nesne Düzenleyici (WIP)"}</span>
+        <span className="min-w-0 flex-1 truncate text-center text-sm font-medium">{name || "Object Editor"}</span>
         <div className="flex items-center gap-3">
           {bytes && (
             <button
@@ -59,11 +59,11 @@ export default function ObjectEditorPage() {
               disabled={saving}
             >
               <Download size={16} />
-              {saving ? "…" : "Kaydet"}
+              {saving ? "…" : "Save"}
             </button>
           )}
           <label className="cursor-pointer whitespace-nowrap text-sm text-blue-600">
-            PDF aç
+            Open PDF
             <input type="file" accept="application/pdf" className="hidden" onChange={onPick} />
           </label>
         </div>
@@ -71,7 +71,7 @@ export default function ObjectEditorPage() {
 
       {!native && (
         <p className="bg-amber-100 p-3 text-sm text-amber-900">
-          Native PDFium motoru gerekir — bu ekran yalnızca Android uygulamasında çalışır.
+          Requires the native PDFium engine — this screen only works in the Android app.
         </p>
       )}
 
@@ -80,10 +80,7 @@ export default function ObjectEditorPage() {
           <ObjectCanvas bytes={bytes} />
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-neutral-500">
-            <p>Başlamak için bir PDF aç.</p>
-            <Link href="/pdf-engine-test" className="text-blue-600 underline">
-              ham motor testi →
-            </Link>
+            <p>Open a PDF to get started.</p>
           </div>
         )}
       </div>

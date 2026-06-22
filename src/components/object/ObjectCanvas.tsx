@@ -643,45 +643,45 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
         </div>
       )}
 
-      {/* selection bottom sheet: actions + colour + typeable X/Y/size/angle */}
-      {selectedObj && !textInput && (() => {
+      {/* selection bottom sheet: actions + colour + typeable X/Y/W/H/angle (hidden mid-gesture) */}
+      {selectedObj && !textInput && !preview && (() => {
         const [ol, ob, or2, ot] = selectedObj.bounds;
         const w = or2 - ol;
         const h = ot - ob;
         const angle = (Math.atan2(selectedObj.matrix[1], selectedObj.matrix[0]) * 180) / Math.PI;
         const colorable = selectedObj.type === "text" || selectedObj.type === "path";
+        const typeLabel = selectedObj.type.charAt(0).toUpperCase() + selectedObj.type.slice(1);
         return (
-          <div className="pb-safe absolute inset-x-0 bottom-0 z-30 space-y-2 rounded-t-xl bg-white p-3 shadow-[0_-4px_16px_rgba(0,0,0,0.15)]">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-neutral-700">
-                {selectedObj.type} #{selectedObj.id}
-              </span>
+          <div className="pb-safe absolute inset-x-0 bottom-0 z-30 space-y-2.5 rounded-t-2xl bg-white p-3 shadow-[0_-4px_20px_rgba(0,0,0,0.18)]">
+            <div className="mx-auto h-1 w-10 rounded-full bg-neutral-300" />
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm font-semibold text-neutral-800">{typeLabel}</span>
               <div className="flex flex-wrap items-center justify-end gap-1">
                 {selectedObj.type === "text" && (
-                  <button className={BTN} title="Metni değiştir" onClick={() => setTextInput({ value: "" })}>
+                  <button className={BTN} title="Edit text" onClick={() => setTextInput({ value: "" })}>
                     <Pencil size={18} />
                   </button>
                 )}
-                <button className={BTN} title="Öne getir" onClick={() => doReorder(true)}>
+                <button className={BTN} title="Bring to front" onClick={() => doReorder(true)}>
                   <ArrowUpToLine size={18} />
                 </button>
-                <button className={BTN} title="Arkaya gönder" onClick={() => doReorder(false)}>
+                <button className={BTN} title="Send to back" onClick={() => doReorder(false)}>
                   <ArrowDownToLine size={18} />
                 </button>
-                <button className={BTN} title="Kopyala" onClick={doDuplicate}>
+                <button className={BTN} title="Duplicate" onClick={doDuplicate}>
                   <Copy size={18} />
                 </button>
-                <button className={`${BTN} text-red-600`} title="Sil" onClick={doDelete}>
+                <button className={`${BTN} text-red-600`} title="Delete" onClick={doDelete}>
                   <Trash2 size={18} />
                 </button>
-                <button className={`${BTN} text-blue-600`} title="Bitti" onClick={() => setSelectedId(null)}>
+                <button className={`${BTN} text-blue-600`} title="Done" onClick={() => setSelectedId(null)}>
                   <Check size={18} />
                 </button>
               </div>
             </div>
             {colorable && (
               <div className="flex items-center gap-1 overflow-x-auto">
-                <span className="shrink-0 pr-1 text-[11px] text-neutral-500">Renk</span>
+                <span className="shrink-0 pr-1 text-[11px] text-neutral-500">Color</span>
                 {SWATCHES.map((c) => (
                   <button
                     key={c}
@@ -691,7 +691,7 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
                     style={{ backgroundColor: c }}
                   />
                 ))}
-                <label className={`${BTN} relative shrink-0 cursor-pointer`} title="Renk seç">
+                <label className={`${BTN} relative shrink-0 cursor-pointer`} title="Custom color">
                   <Palette size={18} />
                   <input
                     type="color"
@@ -705,9 +705,38 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
               <NumberField label="X" suffix="pt" value={ol} step={5} onCommit={(nx) => applyMatrix(moveMatrix(nx - ol, 0))} />
               <NumberField label="Y" suffix="pt" value={ob} step={5} onCommit={(ny) => applyMatrix(moveMatrix(0, ny - ob))} />
-              <NumberField label="En" suffix="pt" value={w} step={5} onCommit={(nw) => { if (w > 0) applyMatrix(scaleAboutMatrix(nw / w, 1, ol, ob)); }} />
-              <NumberField label="Boy" suffix="pt" value={h} step={5} onCommit={(nh) => { if (h > 0) applyMatrix(scaleAboutMatrix(1, nh / h, ol, ob)); }} />
-              <NumberField label="Açı" suffix="°" value={angle} step={5} onCommit={(nd) => applyMatrix(rotateAboutMatrix(((nd - angle) * Math.PI) / 180, (ol + or2) / 2, (ob + ot) / 2))} />
+              <NumberField label="W" suffix="pt" value={w} step={5} onCommit={(nw) => { if (w > 0) applyMatrix(scaleAboutMatrix(nw / w, 1, ol, ob)); }} />
+              <NumberField label="H" suffix="pt" value={h} step={5} onCommit={(nh) => { if (h > 0) applyMatrix(scaleAboutMatrix(1, nh / h, ol, ob)); }} />
+              <NumberField label="Angle" suffix="°" value={angle} step={5} onCommit={(nd) => applyMatrix(rotateAboutMatrix(((nd - angle) * Math.PI) / 180, (ol + or2) / 2, (ob + ot) / 2))} />
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* alignment rulers while moving/resizing: screen-space dashed guides through the box
+          edges + a live position/size badge (skipped for rotate, where edges don't stay axis-aligned) */}
+      {preview && box && eg.current?.type !== "rotate" && (() => {
+        const sc = page ? pageScale(page) : { sx: 1, sy: 1 };
+        const right = box.left + box.width;
+        const bottom = box.top + box.height;
+        const pdfX = Math.round((box.left - view.tx) / view.scale / sc.sx);
+        const pdfY = Math.round((page?.pageHeight ?? 0) - (bottom - view.ty) / view.scale / sc.sy);
+        const badge =
+          eg.current?.type === "resize"
+            ? `${Math.round(box.width / view.scale / sc.sx)} × ${Math.round(box.height / view.scale / sc.sy)} pt`
+            : `X ${pdfX} · Y ${pdfY} pt`;
+        const line = "pointer-events-none absolute border-dashed border-blue-500/70";
+        return (
+          <div className="pointer-events-none absolute inset-0 z-10">
+            <div className={`${line} border-l`} style={{ left: box.left, top: 0, bottom: 0 }} />
+            <div className={`${line} border-l`} style={{ left: right, top: 0, bottom: 0 }} />
+            <div className={`${line} border-t`} style={{ top: box.top, left: 0, right: 0 }} />
+            <div className={`${line} border-t`} style={{ top: bottom, left: 0, right: 0 }} />
+            <div
+              className="absolute whitespace-nowrap rounded bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium text-white"
+              style={{ left: Math.max(2, box.left), top: Math.max(2, box.top - 18) }}
+            >
+              {badge}
             </div>
           </div>
         );
@@ -720,14 +749,14 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
             autoFocus
             value={textInput.value}
             onChange={(e) => setTextInput({ value: e.target.value })}
-            placeholder="Yeni metin"
+            placeholder="New text"
             className="min-w-0 flex-1 rounded border border-neutral-300 px-2 py-1 text-sm outline-none focus:border-blue-500"
           />
           <button className="rounded bg-blue-600 px-3 py-1 text-sm text-white" onClick={() => doText(textInput.value)}>
-            Uygula
+            Apply
           </button>
           <button className="rounded px-2 py-1 text-sm text-neutral-600" onClick={() => setTextInput(null)}>
-            İptal
+            Cancel
           </button>
         </div>
       )}
@@ -738,7 +767,7 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
           <button
             onClick={undo}
             disabled={!canUndo}
-            aria-label="Geri al"
+            aria-label="Undo"
             className="flex h-9 w-9 items-center justify-center rounded-full bg-black/55 text-white shadow disabled:opacity-30"
           >
             <Undo2 size={18} />
@@ -746,7 +775,7 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
           <button
             onClick={redo}
             disabled={!canRedo}
-            aria-label="Yinele"
+            aria-label="Redo"
             className="flex h-9 w-9 items-center justify-center rounded-full bg-black/55 text-white shadow disabled:opacity-30"
           >
             <Redo2 size={18} />
@@ -757,13 +786,13 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
       {/* hint */}
       {!loading && objects.length > 0 && !selectedObj && (
         <div className="pointer-events-none absolute left-2 top-2 z-10 rounded bg-black/55 px-2 py-1 text-[11px] text-white">
-          {objects.length} nesne · dokunup seç
+          {objects.length} objects · tap to select
         </div>
       )}
 
       {(loading || busy) && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <span className="rounded bg-black/60 px-3 py-1 text-xs text-white">{loading ? "Yükleniyor…" : "İşleniyor…"}</span>
+          <span className="rounded bg-black/60 px-3 py-1 text-xs text-white">{loading ? "Loading…" : "Working…"}</span>
         </div>
       )}
       {error && <div className="absolute inset-x-3 top-3 z-40 rounded bg-red-600 px-3 py-2 text-xs text-white">{error}</div>}
@@ -775,7 +804,7 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
             className="flex h-10 w-10 items-center justify-center rounded-full disabled:opacity-30"
             onClick={() => canPrev && setPageIndex((i) => i - 1)}
             disabled={!canPrev}
-            aria-label="Önceki sayfa"
+            aria-label="Previous page"
           >
             <ChevronLeft size={20} />
           </button>
@@ -786,11 +815,11 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
             className="flex h-10 w-10 items-center justify-center rounded-full disabled:opacity-30"
             onClick={() => canNext && setPageIndex((i) => i + 1)}
             disabled={!canNext}
-            aria-label="Sonraki sayfa"
+            aria-label="Next page"
           >
             <ChevronRight size={20} />
           </button>
-          <button className="ml-1 flex h-10 w-10 items-center justify-center rounded-full" onClick={() => page && fitToWidth(page)} aria-label="Sığdır">
+          <button className="ml-1 flex h-10 w-10 items-center justify-center rounded-full" onClick={() => page && fitToWidth(page)} aria-label="Fit">
             <Maximize size={18} />
           </button>
         </div>
