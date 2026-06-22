@@ -118,7 +118,10 @@ async function calibrateFonts(
     const family = cache.get(key)?.fontFamily;
     if (!family || (samples.get(key)?.length ?? 0) >= 8) continue;
     const fs = Math.hypot(r.transform[2], r.transform[3]);
-    if (fs <= 0 || r.width <= 0 || r.str.trim().length === 0) continue;
+    // Measure ONLY space-free runs of >=2 chars: a run's spaces make pdf.js's advance
+    // (edit.width) and the DOM's natural width disagree (space-advance differs), which skews
+    // k below 1 and dwarfs the text. Pure-glyph runs give the font's true scale.
+    if (fs <= 0 || r.width <= 0 || r.str.includes(" ") || r.str.trim().length < 2) continue;
     if (!document.fonts.check(`${M}px "${family}"`)) continue; // face unavailable → bundled
     const measured = measureTextPx(`"${family}"`, r.str, M); // px the engine actually paints
     const expected = r.width * (M / fs); // px it SHOULD span (pdf.js advance, scaled to M)
@@ -371,6 +374,7 @@ export function TextLayer({
                   top: 0,
                   ...glyphStyle(edit, fontPx),
                   ...scaleStyle(kVis, baselinePx),
+                  ...spacingStyle(edit, scale, kVis),
                 }}
               >
                 {edit.newText}
@@ -440,6 +444,12 @@ export function TextLayer({
               /* font program unavailable — export falls back to the bundled face */
             }
           }
+          // Natural advance of the new text at the corrected size (PDF points), so the preview
+          // can distribute slack as letter/word-spacing to match the original box width. The
+          // probe renders the injected font oversized by 1/k, so scale the measured px by k.
+          const fam = item.fontFamily ? `"${item.fontFamily}"` : editFamily(item.serif);
+          const wPx = measureTextPx(fam, value, 256);
+          const naturalWidth = wPx > 0 ? (wPx * item.sizeScale * pdfFontSize) / 256 : undefined;
           onCommit({
             pageId,
             itemIndex: item.itemIndex,
@@ -460,6 +470,7 @@ export function TextLayer({
             ascent: item.ascent,
             fontFamily: item.fontFamily,
             sizeScale: item.sizeScale,
+            naturalWidth,
           });
         };
 
@@ -494,9 +505,9 @@ export function TextLayer({
                 textRendering: "geometricPrecision",
                 WebkitFontSmoothing: "antialiased",
                 MozOsxFontSmoothing: "grayscale",
-                wordSpacing: "0.16em",
                 WebkitTextStroke: `${Math.min(0.25, fontPx * (item.bold ? 0.014 : 0.009))}px currentColor`,
                 ...scaleStyle(k, baselinePx),
+                ...(edit ? spacingStyle(edit, scale, k) : {}),
               }}
               className="absolute z-20 box-content whitespace-nowrap border border-blue-500 bg-white px-0.5 leading-none text-black shadow-sm outline-none"
             />
@@ -521,6 +532,7 @@ export function TextLayer({
                   top: 0,
                   ...glyphStyle(edit, fontPx),
                   ...scaleStyle(k, baselinePx),
+                  ...spacingStyle(edit, scale, k),
                 }}
               >
                 {edit.newText}
@@ -581,10 +593,8 @@ function glyphStyle(edit: TextEdit, fontPx: number): CSSProperties {
     fontWeight: edit.bold ? 700 : undefined,
     fontStyle: edit.italic ? "italic" : undefined,
     fontFamily: edit.fontFamily ? `${edit.fontFamily}, ${editFamily(!!edit.serif)}` : editFamily(!!edit.serif),
-    // Static prop to the space character — the DOM renders spaces a touch narrow vs the page.
-    // Em-based so it tracks the font size; NOT a box-fit/slack calc (the word lengths are
-    // untouched, only the " " gets a standard typographic nudge).
-    wordSpacing: "0.16em",
+    // Word/letter spacing is supplied separately by spacingStyle (box-fit), so the run fills
+    // its original footprint and matches the page's justification.
     textDecorationLine: decorationLine(edit),
     // A hairline same-colour stroke on ALL runs adds the requested touch of weight (the
     // injected glyphs read a hair thin on screen). Capped at 0.25px so it never fills glyph
@@ -602,4 +612,29 @@ function glyphStyle(edit: TextEdit, fontPx: number): CSSProperties {
  */
 function scaleStyle(k: number, baselinePx: number): CSSProperties {
   return Math.abs(k - 1) < 0.002 ? {} : { transform: `scale(${k})`, transformOrigin: `0 ${baselinePx}px` };
+}
+
+/**
+ * Distribute the slack between the run's box width (edit.width) and the new text's natural
+ * width so the run fits the original box — without touching the font size. Multi-word strings
+ * open `word-spacing` (the gaps between words); single words open `letter-spacing`. Caps are
+ * VERY tight (0.25em / 0.05em) so it nudges alignment without ever gum-stretching. Stretch-only
+ * (never condense). Values are local px (÷k, since the glyph element is scaled by k).
+ */
+function spacingStyle(edit: TextEdit, scale: number, k: number): CSSProperties {
+  const n = edit.naturalWidth;
+  if (n == null || !edit.width || k <= 0) return {};
+  const slackPdf = edit.width - n;
+  if (slackPdf <= 0) return {};
+  const em = edit.fontSize ?? 12;
+  const localPx = (gapPdf: number) => `${(gapPdf * scale) / k}px`;
+  const chars = Array.from(edit.newText);
+  const spaces = chars.filter((c) => c === " ").length;
+  if (spaces > 0) {
+    const gap = Math.min(slackPdf / spaces, em * 0.25);
+    return { wordSpacing: localPx(gap) };
+  }
+  if (chars.length < 2) return {};
+  const gap = Math.min(slackPdf / (chars.length - 1), em * 0.05);
+  return { letterSpacing: localPx(gap) };
 }
