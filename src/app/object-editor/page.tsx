@@ -10,6 +10,7 @@ import { Download } from "lucide-react";
 import { Capacitor } from "@capacitor/core";
 import { ObjectCanvas } from "@/components/object/ObjectCanvas";
 import { PdfEngine } from "@/lib/object/pdfEngine";
+import { takeHandoffPdf } from "@/lib/object/handoff";
 import { saveFile } from "@/lib/save";
 
 export default function ObjectEditorPage() {
@@ -18,7 +19,16 @@ export default function ObjectEditorPage() {
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => setNative(Capacitor.isNativePlatform()), []);
+  // Pick up the document handed over from the main editor's "Object" button; if there is none
+  // (a direct visit), the user opens one with the picker in the header.
+  useEffect(() => {
+    setNative(Capacitor.isNativePlatform());
+    const h = takeHandoffPdf();
+    if (h) {
+      setName(h.name);
+      setBytes(h.bytes);
+    }
+  }, []);
 
   async function onPick(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];

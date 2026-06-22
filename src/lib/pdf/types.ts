@@ -69,6 +69,10 @@ export interface TextEdit {
   userLetterSpacing?: number;
   /** Manual word spacing in em (extra gap at space characters). */
   userWordSpacing?: number;
+  /** True once the user manually toggled bold/italic, so the effective `bold`/`italic` value
+   *  is kept (and the edit is treated as "touched") through a string re-edit / seed cleanup. */
+  userBold?: boolean;
+  userItalic?: boolean;
 }
 
 /** Stable map key for a text edit. */

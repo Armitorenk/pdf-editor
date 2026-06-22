@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { ImagePlus, Loader2, Maximize, ZoomIn, ZoomOut } from "lucide-react";
 import { Capacitor } from "@capacitor/core";
 import { usePdfDocument } from "@/hooks/usePdfDocument";
+import { setHandoffPdf } from "@/lib/object/handoff";
 import { cn } from "@/lib/utils";
 import { saveFile } from "@/lib/save";
 import { exportPdf } from "@/lib/pdf/export";
@@ -114,7 +116,14 @@ export function PdfEditor() {
     annotations: Annotation[];
   } | null>(null);
 
+  const router = useRouter();
   const { doc, numPages, status, error } = usePdfDocument(fileBytes);
+
+  // Hand the open document to the dedicated native PDFium Object Editor and navigate there.
+  const goToObjectEditor = useCallback(() => {
+    if (fileBytes) setHandoffPdf(fileBytes, fileName ?? "document.pdf");
+    router.push("/object-editor");
+  }, [fileBytes, fileName, router]);
 
   // Parse the document's font metadata once (FontDescriptor flags / italic angle /
   // weight) so text edits can detect the original run's bold/italic/serif from the
@@ -336,12 +345,21 @@ export function PdfEditor() {
     return () => handle?.remove();
   }, [closeProject]);
 
-  /** Switch tools; object selections only matter within their own mode. */
-  const setMode = useCallback((mode: EditMode) => {
-    setEditMode(mode);
-    if (mode !== "image") setSelectedImageId(null);
-    if (mode !== "annotate") setSelectedAnnotationId(null);
-  }, []);
+  /** Switch tools; object selections only matter within their own mode. On the Android app the
+   *  "Object" entry opens the dedicated native PDFium object editor (carrying the open document)
+   *  instead of the in-page raster "lift" mode; on the web it stays the lift mode. */
+  const setMode = useCallback(
+    (mode: EditMode) => {
+      if (mode === "object" && Capacitor.isNativePlatform()) {
+        goToObjectEditor();
+        return;
+      }
+      setEditMode(mode);
+      if (mode !== "image") setSelectedImageId(null);
+      if (mode !== "annotate") setSelectedAnnotationId(null);
+    },
+    [goToObjectEditor],
+  );
 
   /** Pick the annotation tool; leaving "select" clears any current selection. */
   const pickAnnotationTool = useCallback((tool: AnnotationTool) => {

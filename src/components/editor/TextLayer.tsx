@@ -1,7 +1,7 @@
 "use client";
 
 import { type CSSProperties, Fragment, useEffect, useRef, useState } from "react";
-import { Check, Minus, Palette, Pencil, Plus, Trash2 } from "lucide-react";
+import { Bold, Check, Italic, Minus, Palette, Pencil, Plus, Trash2 } from "lucide-react";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 import { multiplyMatrix } from "@/lib/pdf/coordinates";
 import { sampleRunColors, runRelStem, isBold, percentile, detectDecorations, type PageSample } from "@/lib/pdf/sampleColor";
@@ -51,7 +51,9 @@ const hasOverrides = (e?: TextEdit) =>
     e.userScale != null ||
     e.userColor != null ||
     e.userLetterSpacing != null ||
-    e.userWordSpacing != null);
+    e.userWordSpacing != null ||
+    !!e.userBold ||
+    !!e.userItalic);
 // Base word-spacing nudge baked into the on-screen glyphs (the WebView paints spaces a hair
 // narrow); the user's adjustment is added on top of this.
 const BASE_WORD_SPACING_EM = 0.16;
@@ -507,8 +509,9 @@ export function TextLayer({
             bgColor: colors?.bg,
             textColor: colors?.text,
             serif: item.serif,
-            bold: item.bold,
-            italic: item.italic,
+            // Keep a manual bold/italic toggle through a string re-edit (else detection wins).
+            bold: edit?.bold ?? item.bold,
+            italic: edit?.italic ?? item.italic,
             underline: deco?.underline,
             strike: deco?.strike,
             fontPsName: item.psName,
@@ -521,6 +524,8 @@ export function TextLayer({
             userColor: edit?.userColor,
             userLetterSpacing: edit?.userLetterSpacing,
             userWordSpacing: edit?.userWordSpacing,
+            userBold: edit?.userBold,
+            userItalic: edit?.userItalic,
           };
         };
 
@@ -688,8 +693,25 @@ export function TextLayer({
                       onChange={(em) => onCommit({ ...edit, userWordSpacing: em })}
                     />
                   </div>
-                  {/* colour + actions */}
+                  {/* style: bold / italic + colour */}
                   <div className="flex items-center gap-1">
+                    <button
+                      title="Bold"
+                      aria-pressed={!!edit.bold}
+                      onClick={() => onCommit({ ...edit, bold: !edit.bold, userBold: true })}
+                      className={`flex h-8 w-8 items-center justify-center rounded ${edit.bold ? "bg-blue-100 text-blue-700" : "text-neutral-700 hover:bg-neutral-100"}`}
+                    >
+                      <Bold size={16} />
+                    </button>
+                    <button
+                      title="Italic"
+                      aria-pressed={!!edit.italic}
+                      onClick={() => onCommit({ ...edit, italic: !edit.italic, userItalic: true })}
+                      className={`flex h-8 w-8 items-center justify-center rounded ${edit.italic ? "bg-blue-100 text-blue-700" : "text-neutral-700 hover:bg-neutral-100"}`}
+                    >
+                      <Italic size={16} />
+                    </button>
+                    <div className="mx-1 h-6 w-px bg-neutral-200" />
                     <span className="pr-0.5 text-[10px] text-neutral-500">Color</span>
                     {SWATCHES.map((c) => (
                       <button
@@ -709,15 +731,26 @@ export function TextLayer({
                         className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
                       />
                     </label>
-                    <div className="mx-1 h-6 w-px bg-neutral-200" />
-                    <button className={TOOL_BTN} title="Edit text" onClick={() => setEditingKey(key)}>
-                      <Pencil size={16} />
+                  </div>
+                  {/* labelled actions (clear that they exist, not just icons) */}
+                  <div className="flex items-center gap-1">
+                    <button
+                      className="flex h-9 items-center gap-1.5 rounded-md px-2.5 text-sm text-neutral-700 hover:bg-neutral-100 active:bg-neutral-200"
+                      onClick={() => setEditingKey(key)}
+                    >
+                      <Pencil size={15} /> Edit text
                     </button>
-                    <button className={`${TOOL_BTN} text-red-600`} title="Delete" onClick={() => { setSelectedKey(null); onRemove(key); }}>
-                      <Trash2 size={16} />
+                    <button
+                      className="flex h-9 items-center gap-1.5 rounded-md px-2.5 text-sm text-red-600 hover:bg-red-50 active:bg-red-100"
+                      onClick={() => { onCommit(buildEdit("")); setSelectedKey(null); }}
+                    >
+                      <Trash2 size={15} /> Delete
                     </button>
-                    <button className={`${TOOL_BTN} text-blue-600`} title="Done" onClick={() => setSelectedKey(null)}>
-                      <Check size={16} />
+                    <button
+                      className="ml-auto flex h-9 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-blue-600 hover:bg-blue-50 active:bg-blue-100"
+                      onClick={() => setSelectedKey(null)}
+                    >
+                      <Check size={15} /> Done
                     </button>
                   </div>
                 </div>
