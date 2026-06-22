@@ -1,9 +1,8 @@
 "use client";
 
-// TEMP dev entry: a native-only floating link (home screen only) to the PDFium engine smoke-test
-// page. Lets us verify the native object-editing engine in the APK without touching the editor UI.
-// Remove this component + its mount in layout.tsx + the /pdf-engine-test route once a real
-// object-editing UI exists.
+// Dev entry: a native-only floating link (home screen only) to the WIP object editor
+// (/object-editor), which is built on the native PDFium engine. Kept separate from the existing
+// editor UI while object editing is under construction. Remove once it ships as a normal entry.
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -20,10 +19,10 @@ export function DevEngineTestLink() {
 
   return (
     <Link
-      href="/pdf-engine-test"
+      href="/object-editor"
       className="fixed bottom-3 left-3 z-50 rounded-full bg-black/70 px-3 py-2 text-xs font-medium text-white shadow-lg"
     >
-      PDFium Test
+      Nesne Düzenle (WIP)
     </Link>
   );
 }

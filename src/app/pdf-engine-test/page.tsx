@@ -10,15 +10,7 @@ import { useEffect, useState, type ChangeEvent } from "react";
 import Link from "next/link";
 import { Capacitor } from "@capacitor/core";
 import { PdfEngine, type PdfObject } from "@/lib/object/pdfEngine";
-
-function base64FromBytes(bytes: Uint8Array): string {
-  let binary = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
-}
+import { base64FromBytes } from "@/lib/object/base64";
 
 export default function PdfEngineTestPage() {
   const [native, setNative] = useState(false);
