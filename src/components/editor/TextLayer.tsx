@@ -38,8 +38,14 @@ const SAMPLE_MAX_SIDE = 1400;
 // inject/calibrate — correctly sized, close match, and never the platform UI font.
 const editFamily = (serif: boolean) => (serif ? "EditorSerif, serif" : "EditorSans, sans-serif");
 
-// --- Manual edit controls (tap an edited run -> move / resize / recolour) ---
-const clampUserScale = (n: number) => Math.min(5, Math.max(0.2, n));
+// --- Manual edit controls (tap an edited run -> move / resize / recolour / spacing) ---
+const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
+const clampUserScale = (n: number) => clamp(n, 0.2, 5);
+// Base word-spacing nudge baked into the on-screen glyphs (the WebView paints spaces a hair
+// narrow); the user's adjustment is added on top of this.
+const BASE_WORD_SPACING_EM = 0.16;
+const LETTER_STEP = 0.02; // em per tap
+const WORD_STEP = 0.05; // em per tap
 const SWATCHES = ["#000000", "#ffffff", "#e11d48", "#2563eb", "#16a34a", "#f59e0b"];
 // Floating-toolbar button: a 44dp-ish touch target.
 const TOOL_BTN = "flex h-10 w-10 items-center justify-center rounded-md hover:bg-neutral-100 active:bg-neutral-200";
@@ -492,11 +498,13 @@ export function TextLayer({
             ascent: item.ascent,
             fontFamily: item.fontFamily,
             sizeScale: item.sizeScale,
-            // Keep any manual move/size/colour the user already applied to this run.
+            // Keep any manual move/size/colour/spacing the user already applied to this run.
             userDx: edit?.userDx,
             userDy: edit?.userDy,
             userScale: edit?.userScale,
             userColor: edit?.userColor,
+            userLetterSpacing: edit?.userLetterSpacing,
+            userWordSpacing: edit?.userWordSpacing,
           });
         };
 
@@ -531,7 +539,8 @@ export function TextLayer({
                 textRendering: "geometricPrecision",
                 WebkitFontSmoothing: "antialiased",
                 MozOsxFontSmoothing: "grayscale",
-                wordSpacing: "0.16em",
+                wordSpacing: `${BASE_WORD_SPACING_EM + (edit?.userWordSpacing ?? 0)}em`,
+                letterSpacing: edit?.userLetterSpacing ? `${edit.userLetterSpacing}em` : undefined,
                 WebkitTextStroke: `${Math.min(0.25, fontPx * (item.bold ? 0.014 : 0.009))}px currentColor`,
                 ...scaleStyle(k, baselinePx),
               }}
@@ -555,6 +564,10 @@ export function TextLayer({
           const toolbarTop = textTop > TOOLBAR_H + 8 ? textTop - TOOLBAR_H - 8 : textTop + boxHeight + 8;
           const setScale = (mult: number) =>
             onCommit({ ...edit, userScale: clampUserScale((edit.userScale ?? 1) * mult) });
+          const adjLetter = (d: number) =>
+            onCommit({ ...edit, userLetterSpacing: clamp((edit.userLetterSpacing ?? 0) + d, -0.2, 1) });
+          const adjWord = (d: number) =>
+            onCommit({ ...edit, userWordSpacing: clamp((edit.userWordSpacing ?? 0) + d, -0.2, 2) });
           return (
             <Fragment key={key}>
               <div
@@ -601,12 +614,22 @@ export function TextLayer({
                   <button className={TOOL_BTN} title="Metni düzenle" onClick={() => { setSelectedKey(null); setEditingKey(key); }}>
                     <Pencil size={18} />
                   </button>
-                  <button className={TOOL_BTN} title="Küçült" onClick={() => setScale(1 / 1.1)}>
-                    <Minus size={18} />
-                  </button>
-                  <button className={TOOL_BTN} title="Büyüt" onClick={() => setScale(1.1)}>
-                    <Plus size={18} />
-                  </button>
+                  {/* size / letter-spacing / word-spacing steppers */}
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    <span className="px-1 text-[10px] leading-none text-neutral-500">boyut</span>
+                    <button className={TOOL_BTN} title="Küçült" onClick={() => setScale(1 / 1.1)}><Minus size={16} /></button>
+                    <button className={TOOL_BTN} title="Büyüt" onClick={() => setScale(1.1)}><Plus size={16} /></button>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    <span className="px-1 text-[10px] leading-none text-neutral-500">harf</span>
+                    <button className={TOOL_BTN} title="Harf aralığı azalt" onClick={() => adjLetter(-LETTER_STEP)}><Minus size={16} /></button>
+                    <button className={TOOL_BTN} title="Harf aralığı artır" onClick={() => adjLetter(LETTER_STEP)}><Plus size={16} /></button>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    <span className="px-1 text-[10px] leading-none text-neutral-500">kelime</span>
+                    <button className={TOOL_BTN} title="Kelime aralığı azalt" onClick={() => adjWord(-WORD_STEP)}><Minus size={16} /></button>
+                    <button className={TOOL_BTN} title="Kelime aralığı artır" onClick={() => adjWord(WORD_STEP)}><Plus size={16} /></button>
+                  </div>
                   {SWATCHES.map((c) => (
                     <button
                       key={c}
@@ -689,10 +712,11 @@ function glyphStyle(edit: TextEdit, fontPx: number): CSSProperties {
     fontWeight: edit.bold ? 700 : undefined,
     fontStyle: edit.italic ? "italic" : undefined,
     fontFamily: edit.fontFamily ? `${edit.fontFamily}, ${editFamily(!!edit.serif)}` : editFamily(!!edit.serif),
-    // Static prop to the space character — the DOM renders spaces a touch narrow vs the page.
-    // Em-based so it tracks the font size; NOT a box-fit/slack calc (the word lengths are
-    // untouched, only the " " gets a standard typographic nudge).
-    wordSpacing: "0.16em",
+    // Word spacing: a static base nudge (DOM paints spaces a hair narrow) PLUS the user's
+    // manual adjustment. Letter spacing is purely the user's (0 by default). Em-based so both
+    // track the font size and stay proportional between screen and the exported PDF.
+    wordSpacing: `${BASE_WORD_SPACING_EM + (edit.userWordSpacing ?? 0)}em`,
+    letterSpacing: edit.userLetterSpacing ? `${edit.userLetterSpacing}em` : undefined,
     textDecorationLine: decorationLine(edit),
     // A hairline same-colour stroke on ALL runs adds the requested touch of weight (the
     // injected glyphs read a hair thin on screen). Capped at 0.25px so it never fills glyph

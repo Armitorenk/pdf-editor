@@ -65,6 +65,10 @@ export interface TextEdit {
   userScale?: number;
   /** Manual text colour "#rrggbb"; overrides the sampled `textColor`. */
   userColor?: string;
+  /** Manual letter spacing in em (added between every glyph; can be negative to tighten). */
+  userLetterSpacing?: number;
+  /** Manual word spacing in em (extra gap at space characters). */
+  userWordSpacing?: number;
 }
 
 /** Stable map key for a text edit. */

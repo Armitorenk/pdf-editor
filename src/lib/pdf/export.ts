@@ -164,8 +164,23 @@ export async function exportPdf(
           const color = hexToRgb(edit.userColor ?? edit.textColor ?? "#000000", rgb);
           const ux = edit.userDx ?? 0;
           const uy = edit.userDy ?? 0;
-          const drawAt = (dx: number, dy: number) =>
-            page.drawText(edit.newText, { x: edit.x + ux + dx, y: edit.y + uy + dy, size, font, color });
+          // Manual letter/word spacing (em -> points). pdf-lib's drawText can't add spacing, so
+          // when the user set any we draw char-by-char with explicit advances; otherwise keep the
+          // single natural-spacing drawText (unchanged default — no letter spread).
+          const letterPts = (edit.userLetterSpacing ?? 0) * size;
+          const wordPts = (edit.userWordSpacing ?? 0) * size;
+          const drawAt = (dx: number, dy: number) => {
+            const y = edit.y + uy + dy;
+            if (!letterPts && !wordPts) {
+              page.drawText(edit.newText, { x: edit.x + ux + dx, y, size, font, color });
+              return;
+            }
+            let cx = edit.x + ux + dx;
+            for (const ch of edit.newText) {
+              page.drawText(ch, { x: cx, y, size, font, color });
+              cx += font.widthOfTextAtSize(ch, size) + letterPts + (ch === " " ? wordPts : 0);
+            }
+          };
           drawAt(0, 0);
           if (fauxBold) {
             const d = size * 0.03;
