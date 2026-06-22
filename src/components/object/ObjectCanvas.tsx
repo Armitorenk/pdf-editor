@@ -12,6 +12,7 @@ import { PdfEngine, type PdfObject, type RenderedPage } from "@/lib/object/pdfEn
 import { base64FromBytes } from "@/lib/object/base64";
 import { boundsToBitmapRect, hitTestObject, pageScale } from "@/lib/object/objectCoords";
 import { moveMatrix, rotateAboutMatrix, scaleAboutMatrix, type Matrix6 } from "@/lib/object/transforms";
+import { NumberField } from "./NumberField";
 
 const BASE_SCALE = 2; // PDFium rasterisation scale (px per PDF point); CSS transform zooms on top
 const MIN_ZOOM = 0.1;
@@ -362,6 +363,20 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
     }
   }
 
+  // Apply an absolute transform matrix (from the typed value fields) + re-render.
+  async function applyMatrix(m: Matrix6) {
+    if (selectedId == null) return;
+    setBusy(true);
+    try {
+      await PdfEngine.transformObject({ page: pageIndex, index: selectedId, a: m[0], b: m[1], c: m[2], d: m[3], e: m[4], f: m[5] });
+      await refresh(selectedId);
+    } catch (e) {
+      setError(msg(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function doColor(hex: string) {
     if (selectedId == null) return;
     setBusy(true);
@@ -454,70 +469,94 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
             onTouchMove={onEditMove}
             onTouchEnd={onEditEnd}
           />
-          {/* corner resize handles */}
+          {/* corner resize handles: 44px touch target, small visible dot */}
           {(["tl", "tr", "bl", "br"] as Corner[]).map((c) => (
             <div
               key={c}
-              className="pointer-events-auto absolute h-11 w-11 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-blue-500 bg-white shadow"
+              className="pointer-events-auto absolute flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center"
               style={{ left: c.includes("l") ? 0 : box.width, top: c.includes("t") ? 0 : box.height, touchAction: "none" }}
               onTouchStart={onResizeStart(c)}
               onTouchMove={onEditMove}
               onTouchEnd={onEditEnd}
-            />
+            >
+              <div className="h-3.5 w-3.5 rounded-full border-2 border-blue-500 bg-white shadow" />
+            </div>
           ))}
           {/* rotate handle above the top edge */}
           <div
-            className="pointer-events-auto absolute flex h-11 w-11 -translate-x-1/2 items-center justify-center rounded-full border-2 border-blue-500 bg-white shadow"
-            style={{ left: box.width / 2, top: -44, touchAction: "none" }}
+            className="pointer-events-auto absolute flex h-11 w-11 -translate-x-1/2 items-center justify-center"
+            style={{ left: box.width / 2, top: -40, touchAction: "none" }}
             onTouchStart={onRotateStart}
             onTouchMove={onEditMove}
             onTouchEnd={onEditEnd}
           >
-            <RotateCw size={18} className="text-blue-600" />
+            <div className="flex h-7 w-7 items-center justify-center rounded-full border-2 border-blue-500 bg-white shadow">
+              <RotateCw size={14} className="text-blue-600" />
+            </div>
           </div>
         </div>
       )}
 
-      {/* floating toolbar (delete / colour / edit-text) — hidden during an active gesture */}
-      {baseSelRect && selectedObj && !preview && !textInput && (
-        <div
-          className="absolute z-30 flex max-w-[92vw] flex-wrap items-center gap-1 rounded-lg bg-white p-1.5 shadow-lg ring-1 ring-black/10"
-          style={{ left: Math.max(2, baseSelRect.left), top: baseSelRect.top + baseSelRect.height + 14 }}
-        >
-          <span className="px-1 text-[10px] text-neutral-500">
-            {selectedObj.type} #{selectedObj.id}
-          </span>
-          {selectedObj.type === "text" && (
-            <button className={BTN} title="Metni değiştir" onClick={() => setTextInput({ value: "" })}>
-              <Pencil size={18} />
-            </button>
-          )}
-          {SWATCHES.map((c) => (
-            <button
-              key={c}
-              title={c}
-              onClick={() => doColor(c)}
-              className="h-7 w-7 shrink-0 rounded-full ring-1 ring-black/20"
-              style={{ backgroundColor: c }}
-            />
-          ))}
-          <label className={`${BTN} relative cursor-pointer`} title="Renk seç">
-            <Palette size={18} />
-            <input
-              type="color"
-              defaultValue="#000000"
-              onChange={(e) => doColor(e.target.value)}
-              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-            />
-          </label>
-          <button className={`${BTN} text-red-600`} title="Sil" onClick={doDelete}>
-            <Trash2 size={18} />
-          </button>
-          <button className={`${BTN} text-blue-600`} title="Bitti" onClick={() => setSelectedId(null)}>
-            <Check size={18} />
-          </button>
-        </div>
-      )}
+      {/* selection bottom sheet: actions + colour + typeable X/Y/size/angle */}
+      {selectedObj && !textInput && (() => {
+        const [ol, ob, or2, ot] = selectedObj.bounds;
+        const w = or2 - ol;
+        const h = ot - ob;
+        const angle = (Math.atan2(selectedObj.matrix[1], selectedObj.matrix[0]) * 180) / Math.PI;
+        const colorable = selectedObj.type === "text" || selectedObj.type === "path";
+        return (
+          <div className="pb-safe absolute inset-x-0 bottom-0 z-30 space-y-2 rounded-t-xl bg-white p-3 shadow-[0_-4px_16px_rgba(0,0,0,0.15)]">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-neutral-700">
+                {selectedObj.type} #{selectedObj.id}
+              </span>
+              <div className="flex items-center gap-1">
+                {selectedObj.type === "text" && (
+                  <button className={BTN} title="Metni değiştir" onClick={() => setTextInput({ value: "" })}>
+                    <Pencil size={18} />
+                  </button>
+                )}
+                <button className={`${BTN} text-red-600`} title="Sil" onClick={doDelete}>
+                  <Trash2 size={18} />
+                </button>
+                <button className={`${BTN} text-blue-600`} title="Bitti" onClick={() => setSelectedId(null)}>
+                  <Check size={18} />
+                </button>
+              </div>
+            </div>
+            {colorable && (
+              <div className="flex items-center gap-1 overflow-x-auto">
+                <span className="shrink-0 pr-1 text-[11px] text-neutral-500">Renk</span>
+                {SWATCHES.map((c) => (
+                  <button
+                    key={c}
+                    title={c}
+                    onClick={() => doColor(c)}
+                    className="h-7 w-7 shrink-0 rounded-full ring-1 ring-black/20"
+                    style={{ backgroundColor: c }}
+                  />
+                ))}
+                <label className={`${BTN} relative shrink-0 cursor-pointer`} title="Renk seç">
+                  <Palette size={18} />
+                  <input
+                    type="color"
+                    defaultValue="#000000"
+                    onChange={(e) => doColor(e.target.value)}
+                    className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                  />
+                </label>
+              </div>
+            )}
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+              <NumberField label="X" suffix="pt" value={ol} step={5} onCommit={(nx) => applyMatrix(moveMatrix(nx - ol, 0))} />
+              <NumberField label="Y" suffix="pt" value={ob} step={5} onCommit={(ny) => applyMatrix(moveMatrix(0, ny - ob))} />
+              <NumberField label="En" suffix="pt" value={w} step={5} onCommit={(nw) => { if (w > 0) applyMatrix(scaleAboutMatrix(nw / w, 1, ol, ob)); }} />
+              <NumberField label="Boy" suffix="pt" value={h} step={5} onCommit={(nh) => { if (h > 0) applyMatrix(scaleAboutMatrix(1, nh / h, ol, ob)); }} />
+              <NumberField label="Açı" suffix="°" value={angle} step={5} onCommit={(nd) => applyMatrix(rotateAboutMatrix(((nd - angle) * Math.PI) / 180, (ol + or2) / 2, (ob + ot) / 2))} />
+            </div>
+          </div>
+        );
+      })()}
 
       {/* text replacement input */}
       {textInput && (
@@ -552,8 +591,8 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
       )}
       {error && <div className="absolute inset-x-3 top-3 z-40 rounded bg-red-600 px-3 py-2 text-xs text-white">{error}</div>}
 
-      {/* page nav + fit */}
-      {pages > 0 && (
+      {/* page nav + fit (hidden while the selection sheet is open) */}
+      {pages > 0 && !selectedObj && (
         <div className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full bg-black/70 px-2 py-1 text-white shadow-lg">
           <button
             className="flex h-10 w-10 items-center justify-center rounded-full disabled:opacity-30"
