@@ -54,6 +54,15 @@ final class PdfiumBridge {
     static native boolean nativeSetFillColor(long handle, int pageIndex, int objIndex, int r, int g, int b, int a);
     /** Replace a text object's string (kept in the object's existing font). */
     static native boolean nativeSetText(long handle, int pageIndex, int objIndex, String text);
+    /**
+     * Replace a text object's string. {@code fontBytes == null} keeps the original (subset) font;
+     * pass a bundled full TTF to SUBSTITUTE (so Turkish/new glyphs render) preserving size/matrix.
+     * r/g/b/a {@code < 0} keeps the original fill colour. Returns the (possibly new) index, or -1.
+     */
+    static native int nativeReplaceText(long handle, int pageIndex, int objIndex, String text,
+            byte[] fontBytes, int r, int g, int b, int a);
+    /** Best matching bundled-face id (e.g. "arimo-bold", "tinos", "mono") for a text object's font. */
+    static native String nativeGetTextFace(long handle, int pageIndex, int objIndex);
     /** Remove the object from the page. */
     static native boolean nativeDeleteObject(long handle, int pageIndex, int objIndex);
     /** Move the object to front (append) or back (index 0); returns its new index, or -1. */

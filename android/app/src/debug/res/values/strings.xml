@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!-- Debug-only overrides: a distinct app name so the side-loaded test build (applicationId
+     com.armitorenk.pdfeditor.debug) is tellable apart from the Play closed-test version. -->
+<resources>
+    <string name="app_name">PDF Editor (Debug)</string>
+    <string name="title_activity_main">PDF Editor (Debug)</string>
+</resources>

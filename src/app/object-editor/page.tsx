@@ -12,14 +12,19 @@ import { ObjectCanvas } from "@/components/object/ObjectCanvas";
 import { PdfEngine } from "@/lib/object/pdfEngine";
 import { takeHandoffPdf } from "@/lib/object/handoff";
 import { saveFile } from "@/lib/save";
+import { canExport, recordExport } from "@/lib/pro";
+import { Paywall } from "@/components/monetization/Paywall";
 
 export default function ObjectEditorPage() {
   const [native, setNative] = useState(false);
   const [bytes, setBytes] = useState<Uint8Array | null>(null);
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
+  const [paywallOpen, setPaywallOpen] = useState(false);
+  // "text" when opened from the main editor's Text tool → tap selects only text runs.
+  const [textOnly, setTextOnly] = useState(false);
 
-  // Pick up the document handed over from the main editor's "Object" button; if there is none
+  // Pick up the document handed over from the main editor's "Object"/"Text" button; if there is none
   // (a direct visit), the user opens one with the picker in the header.
   useEffect(() => {
     setNative(Capacitor.isNativePlatform());
@@ -27,6 +32,7 @@ export default function ObjectEditorPage() {
     if (h) {
       setName(h.name);
       setBytes(h.bytes);
+      setTextOnly(h.mode === "text");
     }
   }, []);
 
@@ -38,6 +44,11 @@ export default function ObjectEditorPage() {
   }
 
   async function onSave() {
+    // Saving the edited PDF is an export — share the main editor's daily free quota / Pro gate.
+    if (!canExport()) {
+      setPaywallOpen(true);
+      return;
+    }
     setSaving(true);
     try {
       const { data } = await PdfEngine.saveDocument();
@@ -47,6 +58,7 @@ export default function ObjectEditorPage() {
       const blob = new Blob([arr], { type: "application/pdf" });
       const outName = (name.replace(/\.pdf$/i, "") || "document") + "-edited.pdf";
       await saveFile(outName, blob);
+      recordExport();
     } catch (e) {
       alert("Save failed: " + (e instanceof Error ? e.message : String(e)));
     } finally {
@@ -87,13 +99,23 @@ export default function ObjectEditorPage() {
 
       <div className="relative flex-1 overflow-hidden">
         {bytes ? (
-          <ObjectCanvas bytes={bytes} />
+          <ObjectCanvas bytes={bytes} textOnly={textOnly} />
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-neutral-500">
             <p>Open a PDF to get started.</p>
           </div>
         )}
       </div>
+
+      <Paywall
+        open={paywallOpen}
+        onClose={() => setPaywallOpen(false)}
+        // Unlocked → close and immediately complete the save the user was trying to make.
+        onUnlocked={() => {
+          setPaywallOpen(false);
+          void onSave();
+        }}
+      />
     </main>
   );
 }

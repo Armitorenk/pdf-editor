@@ -6,13 +6,16 @@
 #include <android/bitmap.h>
 #include <android/log.h>
 
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "fpdf_edit.h"
 #include "fpdf_save.h"
+#include "fpdf_text.h"
 #include "fpdfview.h"
 
 #define LOG_TAG "PdfEngine"
@@ -246,6 +249,171 @@ Java_com_armitorenk_pdfeditor_PdfiumBridge_nativeSetText(JNIEnv* env, jclass, jl
     }
     FPDF_ClosePage(page);
     return ok;
+}
+
+// Inspect a text object's font and return the best matching bundled-face id for substitution, e.g.
+// "arimo-bold", "tinos", "carlito-italic", "mono". The id = family + style suffix; the family is a
+// METRIC-COMPATIBLE open clone of the original (Arial→Arimo, Times→Tinos, Calibri→Carlito,
+// Courier→mono/Cousine) so a substituted edit looks ~identical. Style comes from the font's flags /
+// weight / italic-angle and its (subset-stripped) name. Returns "sans" when it can't tell.
+JNIEXPORT jstring JNICALL
+Java_com_armitorenk_pdfeditor_PdfiumBridge_nativeGetTextFace(JNIEnv* env, jclass, jlong handle,
+        jint pageIndex, jint objIndex) {
+    std::string face = "sans";
+    auto* h = reinterpret_cast<DocHandle*>(handle);
+    if (h && h->doc) {
+        FPDF_PAGE page = FPDF_LoadPage(h->doc, pageIndex);
+        if (page) {
+            FPDF_PAGEOBJECT obj = FPDFPage_GetObject(page, objIndex);
+            if (obj && FPDFPageObj_GetType(obj) == FPDF_PAGEOBJ_TEXT) {
+                FPDF_FONT font = FPDFTextObj_GetFont(obj);
+                if (font) {
+                    char nameBuf[256] = {0};
+                    FPDFFont_GetBaseFontName(font, nameBuf, sizeof(nameBuf));
+                    std::string name(nameBuf);
+                    for (char& c : name) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+                    int flags = FPDFFont_GetFlags(font);
+                    int weight = FPDFFont_GetWeight(font);
+                    int italicAngle = 0;
+                    FPDFFont_GetItalicAngle(font, &italicAngle);
+                    auto has = [&](const char* s) { return name.find(s) != std::string::npos; };
+
+                    bool fixedPitch = (flags & 1) != 0;      // PDF FontDescriptor flag bits
+                    bool serifFlag = (flags & 2) != 0;
+                    bool italicFlag = (flags & 64) != 0;
+                    bool forceBold = (flags & (1 << 18)) != 0;
+                    bool bold = forceBold || weight >= 600 || has("bold") || has("black") ||
+                                has("heavy") || has("semibold");
+                    bool italic = italicFlag || italicAngle != 0 || has("italic") || has("oblique");
+                    bool mono = fixedPitch || has("mono") || has("courier") || has("consol") || has("cousine");
+                    bool serif = !mono && (serifFlag || has("times") || has("serif") || has("roman") ||
+                                 has("georgia") || has("minion") || has("garamond") || has("tinos") ||
+                                 has("cambria") || has("book antiqua") || has("palatino"));
+
+                    std::string fam;
+                    if (mono) fam = "mono";                                          // Cousine (Courier metric)
+                    else if (has("times") || has("tinos")) fam = "tinos";            // Times metric
+                    else if (has("calibri") || has("carlito")) fam = "carlito";      // Calibri metric
+                    else if (has("arial") || has("helvetica") || has("arimo") || has("liberation sans")) fam = "arimo";
+                    else if (serif) fam = "tinos";                                   // generic serif → Times clone
+                    else fam = "arimo";                                             // generic sans  → Arial clone
+
+                    std::string suffix;
+                    if (bold && italic) suffix = "-bolditalic";
+                    else if (bold) suffix = "-bold";
+                    else if (italic) suffix = "-italic";
+                    face = fam + suffix;
+                }
+            }
+            FPDF_ClosePage(page);
+        }
+    }
+    return env->NewStringUTF(face.c_str());
+}
+
+// Replace a text object's string IN PLACE. We must avoid the ".notdef boxes" trap: the object's
+// embedded font is usually a SUBSET containing only the glyphs that object already uses, so
+// FPDFText_SetText can "succeed" yet render empty boxes for any character the subset lacks (e.g.
+// changing case, or adding a new letter — "HİZMETE ÖZEL" → "Hizmete Bedir" loses every lowercase).
+// So we keep the embedded font ONLY when every character of the new text already appears in the
+// object's ORIGINAL text (then it is certainly in the subset); otherwise we SUBSTITUTE with the
+// bundled full TTF in fontBytes, preserving size/matrix/colour. r/g/b/a < 0 keeps the original fill
+// colour. Returns the (possibly new) object index, or -1 on failure.
+JNIEXPORT jint JNICALL
+Java_com_armitorenk_pdfeditor_PdfiumBridge_nativeReplaceText(JNIEnv* env, jclass, jlong handle,
+        jint pageIndex, jint objIndex, jstring text, jbyteArray fontBytes,
+        jint r, jint g, jint b, jint a) {
+    auto* h = reinterpret_cast<DocHandle*>(handle);
+    if (!h || !h->doc) return -1;
+    FPDF_PAGE page = FPDF_LoadPage(h->doc, pageIndex);
+    if (!page) return -1;
+
+    jint result = -1;
+    FPDF_PAGEOBJECT obj = FPDFPage_GetObject(page, objIndex);
+    if (obj) {
+        const jchar* chars = env->GetStringChars(text, nullptr);
+        const jsize tlen = env->GetStringLength(text);
+        std::vector<unsigned short> buf(static_cast<size_t>(tlen) + 1, 0);  // UTF-16, null-terminated
+        for (jsize i = 0; i < tlen; ++i) buf[i] = chars[i];
+        env->ReleaseStringChars(text, chars);
+        auto* wide = reinterpret_cast<FPDF_WIDESTRING>(buf.data());
+
+        // Read the object's original text so we can tell whether its (subset) font covers the new
+        // glyphs. Covered == every new code unit already appeared in the original string.
+        std::vector<unsigned short> orig;
+        FPDF_TEXTPAGE tp = FPDFText_LoadPage(page);
+        if (tp) {
+            unsigned long olen = FPDFTextObj_GetText(obj, tp, nullptr, 0);  // count incl. terminator
+            if (olen > 0) {
+                orig.assign(olen, 0);
+                FPDFTextObj_GetText(obj, tp, reinterpret_cast<FPDF_WCHAR*>(orig.data()), olen);
+            }
+            FPDFText_ClosePage(tp);
+        }
+        bool covered = !orig.empty();
+        for (jsize i = 0; i < tlen && covered; ++i) {
+            unsigned short ch = buf[i];
+            if (ch == 0) continue;
+            bool found = false;
+            for (unsigned short oc : orig) if (oc == ch) { found = true; break; }
+            if (!found) covered = false;
+        }
+
+        bool substitute = !covered;
+        if (!substitute) {
+            // Every glyph is in the subset → keep the original typeface (best fidelity).
+            if (FPDFText_SetText(obj, wide)) {
+                FPDFPage_GenerateContent(page);
+                result = objIndex;  // object did not move
+            } else {
+                substitute = (fontBytes != nullptr);  // unexpected failure → fall back
+            }
+        }
+        if (substitute && result < 0 && fontBytes != nullptr) {
+            // Rebuild the text object with the supplied bundled TTF (a metric-compatible clone of the
+            // original, chosen by nativeGetTextFace). Because the clone shares the original's metrics,
+            // copying the original font size + text matrix reproduces the SAME size/position — no
+            // box-fitting needed; only the (missing-glyph) typeface differs, and the clone matches it.
+            const jsize flen = env->GetArrayLength(fontBytes);
+            jbyte* fdata = env->GetByteArrayElements(fontBytes, nullptr);
+            if (fdata && flen > 0) {
+                // cid=1 → load as a CID/Type0 font (2-byte, full Unicode). cid=0 is a simple
+                // single-byte font (≤256 chars) and mangles Turkish (>U+00FF) AND drops spaces once
+                // the run contains any such char, so it MUST be 1 here.
+                FPDF_FONT font = FPDFText_LoadFont(h->doc, reinterpret_cast<const uint8_t*>(fdata),
+                        static_cast<uint32_t>(flen), FPDF_FONT_TRUETYPE, /*cid*/ 1);
+                if (font) {
+                    float fontSize = 12.0f;
+                    FPDFTextObj_GetFontSize(obj, &fontSize);
+                    if (!(fontSize > 0)) fontSize = 12.0f;
+                    FS_MATRIX m;
+                    bool haveM = FPDFPageObj_GetMatrix(obj, &m);
+                    unsigned int orr = 0, og = 0, ob = 0, oa = 255;
+                    FPDFPageObj_GetFillColor(obj, &orr, &og, &ob, &oa);
+
+                    FPDF_PAGEOBJECT nt = FPDFPageObj_CreateTextObj(h->doc, font, fontSize);
+                    if (nt && FPDFText_SetText(nt, wide)) {
+                        if (haveM) FPDFPageObj_SetMatrix(nt, &m);
+                        unsigned int fr = (r >= 0) ? (unsigned int) r : orr;
+                        unsigned int fg = (g >= 0) ? (unsigned int) g : og;
+                        unsigned int fb = (b >= 0) ? (unsigned int) b : ob;
+                        unsigned int fa = (a >= 0) ? (unsigned int) a : (oa ? oa : 255);
+                        FPDFPageObj_SetFillColor(nt, fr, fg, fb, fa);
+                        if (FPDFPage_RemoveObject(page, obj)) FPDFPageObj_Destroy(obj);
+                        result = FPDFPage_CountObjects(page);  // appended -> this index
+                        FPDFPage_InsertObject(page, nt);
+                        FPDFPage_GenerateContent(page);
+                    } else if (nt) {
+                        FPDFPageObj_Destroy(nt);  // not inserted -> we still own it
+                    }
+                    FPDFFont_Close(font);  // doc keeps its own reference once embedded
+                }
+            }
+            if (fdata) env->ReleaseByteArrayElements(fontBytes, fdata, JNI_ABORT);
+        }
+    }
+    FPDF_ClosePage(page);
+    return result;
 }
 
 JNIEXPORT jboolean JNICALL

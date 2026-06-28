@@ -3,13 +3,13 @@
 // Friendly, non-forced Pro upsell. Editing is always free; this appears only when the user runs
 // out of the daily free exports or taps "Go Pro". One-time purchase — no subscription, no nags.
 //
-// The "Unlock" / "Restore" buttons currently flip a LOCAL entitlement (so the unlocked experience
-// is testable in the APK today). Wiring real Google Play Billing / RevenueCat is a later step,
-// once the app is on a Play track with a product id — replace the two TODOs below.
+// "Unlock" / "Restore" go through real Google Play Billing on the Android app (see lib/billing.ts);
+// on the web build (no billing rail) they unlock locally so the web app stays usable.
 
 import { useState } from "react";
 import { Check, Crown, Loader2, X } from "lucide-react";
-import { FREE_DAILY_EXPORTS, PRO_PRICE_HINT, exportsRemaining, setProUnlocked } from "@/lib/pro";
+import { FREE_DAILY_EXPORTS, PRO_PRICE_HINT, exportsRemaining } from "@/lib/pro";
+import { getProPrice, purchasePro, restorePro } from "@/lib/billing";
 
 const BENEFITS = [
   "Unlimited PDF exports",
@@ -20,19 +20,24 @@ const BENEFITS = [
 
 export function Paywall({ open, onClose, onUnlocked }: { open: boolean; onClose: () => void; onUnlocked: () => void }) {
   const [busy, setBusy] = useState<null | "buy" | "restore">(null);
+  const [error, setError] = useState<string | null>(null);
   if (!open) return null;
 
   const remaining = exportsRemaining();
   const outOfQuota = Number.isFinite(remaining) && remaining <= 0;
+  const price = getProPrice() ?? PRO_PRICE_HINT;
 
   async function buy() {
     setBusy("buy");
+    setError(null);
     try {
-      // TODO(billing): start the real one-time purchase (Play Billing / RevenueCat) here, and only
-      // call setProUnlocked(true) once it succeeds. Dev stub unlocks locally so the flow is testable.
-      setProUnlocked(true);
-      onUnlocked();
-      onClose();
+      const ok = await purchasePro();
+      if (ok) {
+        onUnlocked();
+        onClose();
+      } // cancelled → silently close the spinner, keep the sheet open
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Purchase failed. Please try again.");
     } finally {
       setBusy(null);
     }
@@ -40,11 +45,17 @@ export function Paywall({ open, onClose, onUnlocked }: { open: boolean; onClose:
 
   async function restore() {
     setBusy("restore");
+    setError(null);
     try {
-      // TODO(billing): query past purchases and unlock if the one-time product is owned.
-      setProUnlocked(true);
-      onUnlocked();
-      onClose();
+      const ok = await restorePro();
+      if (ok) {
+        onUnlocked();
+        onClose();
+      } else {
+        setError("No previous purchase found on this account.");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn’t restore. Please try again.");
     } finally {
       setBusy(null);
     }
@@ -87,8 +98,10 @@ export function Paywall({ open, onClose, onUnlocked }: { open: boolean; onClose:
             className="mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-blue-600 text-base font-semibold text-white shadow-sm transition-colors hover:bg-blue-500 active:bg-blue-700 disabled:opacity-60"
           >
             {busy === "buy" ? <Loader2 size={20} className="animate-spin" /> : <Crown size={20} />}
-            Unlock Pro · {PRO_PRICE_HINT}
+            Unlock Pro · {price}
           </button>
+
+          {error && <p className="mt-3 text-center text-sm text-red-600">{error}</p>}
 
           <div className="mt-3 flex items-center justify-between text-sm">
             <button onClick={restore} disabled={busy !== null} className="text-blue-600 hover:underline disabled:opacity-60">

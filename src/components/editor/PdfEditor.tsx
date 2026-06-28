@@ -7,6 +7,7 @@ import { Capacitor } from "@capacitor/core";
 import { usePdfDocument } from "@/hooks/usePdfDocument";
 import { setHandoffPdf } from "@/lib/object/handoff";
 import { canExport, isPro, recordExport } from "@/lib/pro";
+import { initBilling } from "@/lib/billing";
 import { Paywall } from "@/components/monetization/Paywall";
 import { AdBanner } from "@/components/monetization/AdBanner";
 import { cn } from "@/lib/utils";
@@ -101,7 +102,12 @@ export function PdfEditor() {
   const pro = isPro();
   // Native-only: the bottom banner is shown to free users on the Android app (not on the web).
   const [native, setNative] = useState(false);
-  useEffect(() => setNative(Capacitor.isNativePlatform()), []);
+  useEffect(() => {
+    const isNative = Capacitor.isNativePlatform();
+    setNative(isNative);
+    // Connect Play Billing on the app; re-read Pro if Play auto-restores a past purchase on launch.
+    if (isNative) void initBilling(() => setProTick((t) => t + 1));
+  }, []);
 
   // --- Project library / persistence ---
   const [projectId, setProjectId] = useState<string | null>(null);
@@ -133,10 +139,13 @@ export function PdfEditor() {
   const { doc, numPages, status, error } = usePdfDocument(fileBytes);
 
   // Hand the open document to the dedicated native PDFium Object Editor and navigate there.
-  const goToObjectEditor = useCallback(() => {
-    if (fileBytes) setHandoffPdf(fileBytes, fileName ?? "document.pdf");
-    router.push("/object-editor");
-  }, [fileBytes, fileName, router]);
+  const goToObjectEditor = useCallback(
+    (mode: "object" | "text" = "object") => {
+      if (fileBytes) setHandoffPdf(fileBytes, fileName ?? "document.pdf", mode);
+      router.push("/object-editor");
+    },
+    [fileBytes, fileName, router],
+  );
 
   // Parse the document's font metadata once (FontDescriptor flags / italic angle /
   // weight) so text edits can detect the original run's bold/italic/serif from the
@@ -363,8 +372,11 @@ export function PdfEditor() {
    *  instead of the in-page raster "lift" mode; on the web it stays the lift mode. */
   const setMode = useCallback(
     (mode: EditMode) => {
-      if (mode === "object" && Capacitor.isNativePlatform()) {
-        goToObjectEditor();
+      // On Android, BOTH "Object" and "Text" open the native PDFium editor: text is edited IN PLACE
+      // (no cover box → background lines/panels are preserved). The web build keeps the in-page
+      // cover-based text editor (no native engine on web).
+      if ((mode === "object" || mode === "text") && Capacitor.isNativePlatform()) {
+        goToObjectEditor(mode);
         return;
       }
       setEditMode(mode);

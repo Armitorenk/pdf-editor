@@ -17,8 +17,8 @@ android {
         applicationId "com.armitorenk.pdfeditor"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode 2
+        versionName "1.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         // Native PDF object-editing engine (PDFium JNI). arm64-v8a only for now; widen later.
         ndk {
@@ -58,6 +58,14 @@ android {
             if (keystorePropsFile.exists()) {
                 signingConfig signingConfigs.release
             }
+        }
+        debug {
+            // Distinct applicationId so a side-loaded test build installs ALONGSIDE the Play
+            // (closed-test) version instead of clashing on its signature. The FileProvider authority
+            // is "${applicationId}.fileprovider" so it stays unique too. Debug name is overridden in
+            // src/debug/res so the two apps are tellable apart on the device.
+            applicationIdSuffix ".debug"
+            versionNameSuffix "-debug"
         }
     }
 }

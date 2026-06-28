@@ -22,6 +22,7 @@
     "@capacitor/share": "^8.0.1",
     "@pdf-lib/fontkit": "^1.1.1",
     "clsx": "^2.1.1",
+    "cordova-plugin-purchase": "^13.17.2",
     "jszip": "^3.10.1",
     "lucide-react": "^1.21.0",
     "next": "16.2.9",

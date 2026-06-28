@@ -30,6 +30,13 @@ interface DetectedText {
   /** pdf.js internal font id + resolved PostScript name (for font reuse on export). */
   fontName?: string;
   psName?: string;
+  /**
+   * Tests whether the run's OWN embedded font program contains a glyph for a codepoint.
+   * Embedded PDF fonts are usually SUBSET (only the glyphs already on the page), so this
+   * mirrors export's reuse gate: if the replacement text isn't fully covered, the whole
+   * run falls back to the bundled face instead of a per-glyph browser fallback mix.
+   */
+  glyphCheck?: (cp: number) => boolean;
 }
 
 // Cap the off-screen sampling bitmap so colour detection stays cheap on big pages.
@@ -90,6 +97,40 @@ function ensureFontFace(psName: string, data: Uint8Array): string {
     injectedFonts.set(family, load);
   }
   return family;
+}
+
+// Mirror export's glyph-coverage gate ON SCREEN. An embedded PDF font is usually SUBSET (only
+// the glyphs already used on the page), so typing a letter the subset lacks makes the browser
+// fall back per-glyph → a word rendered in two fonts. We parse the embedded program once with
+// fontkit (the same lib export uses) and, when the new text isn't fully covered, drop the run to
+// the bundled face as a whole — uniform, and identical to what export will produce.
+let fontkitMod: { create: (b: Uint8Array) => { hasGlyphForCodePoint: (cp: number) => boolean } } | null = null;
+async function loadFontkit() {
+  if (!fontkitMod) {
+    const mod = await import("@pdf-lib/fontkit");
+    const m = (mod as { default?: unknown }).default ?? mod;
+    fontkitMod = m as { create: (b: Uint8Array) => { hasGlyphForCodePoint: (cp: number) => boolean } };
+  }
+  return fontkitMod;
+}
+// Parse an embedded program into a coverage predicate. NOT cached across documents — two PDFs can
+// share a subset font name with different glyph sets, so the caller dedupes within a single render.
+function makeGlyphChecker(bytes: Uint8Array): ((cp: number) => boolean) | null {
+  try {
+    if (!fontkitMod) return null;
+    const fk = fontkitMod.create(bytes.slice());
+    return (cp: number) => fk.hasGlyphForCodePoint(cp);
+  } catch {
+    return null; // unparseable program → no gate (display keeps the injected font)
+  }
+}
+/** True when the font has a glyph for every codepoint in `text`. */
+function coversAll(check: (cp: number) => boolean, text: string): boolean {
+  for (const ch of text) {
+    const cp = ch.codePointAt(0);
+    if (cp !== undefined && !check(cp)) return false;
+  }
+  return true;
 }
 
 // A single persistent off-screen probe for live text measurement (visibility:hidden keeps
@@ -318,7 +359,7 @@ export function TextLayer({
       // name + serif flag; the document-wide map gives bold/italic/serif.
       const cache = new Map<
         string,
-        { bold: boolean; italic: boolean; serif: boolean; mono: boolean; hasMeta: boolean; psName: string | null; ascent: number; fontFamily?: string }
+        { bold: boolean; italic: boolean; serif: boolean; mono: boolean; hasMeta: boolean; psName: string | null; ascent: number; fontFamily?: string; data?: Uint8Array }
       >();
       const baseStyle = (fontName: string | undefined) => {
         const key = fontName ?? "";
@@ -327,14 +368,19 @@ export function TextLayer({
         let psName: string | null = null;
         let serifFlag: boolean | null = null;
         let fontFamily: string | undefined;
+        let fontData: Uint8Array | undefined;
         try {
           const fo = fontName && page.commonObjs.has(fontName) ? page.commonObjs.get(fontName) : null;
           if (fo) {
             psName = (fo.name as string) ?? null;
             if (typeof fo.isSerifFont === "boolean") serifFlag = fo.isSerifFont;
             // Inject the document's own font so the editor shows the real typeface; its
-            // on-screen size is corrected by the calibration pass below.
-            if (fo.data && psName) fontFamily = ensureFontFace(psName, fo.data as Uint8Array);
+            // on-screen size is corrected by the calibration pass below. Keep the bytes so the
+            // glyph-coverage gate (mirroring export) can parse the program.
+            if (fo.data && psName) {
+              fontData = fo.data as Uint8Array;
+              fontFamily = ensureFontFace(psName, fontData);
+            }
           }
         } catch {
           /* font not resolved — fall through to family/heuristics */
@@ -356,6 +402,7 @@ export function TextLayer({
           psName,
           ascent,
           fontFamily,
+          data: fontData,
         };
         cache.set(key, out);
         return out;
@@ -391,6 +438,27 @@ export function TextLayer({
           psName: b.psName ?? undefined,
         };
       });
+
+      // Parse each run's embedded program once so buildEdit can mirror export's font-reuse gate
+      // (drop to the bundled face when the new text isn't fully covered by the subset).
+      try {
+        await loadFontkit();
+        if (cancelled) return;
+        const checkerByPs = new Map<string, ((cp: number) => boolean) | null>(); // dedupe per render
+        for (const d of detected) {
+          if (d.psName && d.fontFamily) {
+            let checker = checkerByPs.get(d.psName);
+            if (checker === undefined) {
+              const bytes = cache.get(d.fontName ?? "")?.data;
+              checker = bytes ? makeGlyphChecker(bytes) : null;
+              checkerByPs.set(d.psName, checker);
+            }
+            if (checker) d.glyphCheck = checker;
+          }
+        }
+      } catch {
+        /* fontkit unavailable — display keeps the injected font (pre-gate behaviour) */
+      }
 
       // Calibrate each injected font's on-screen size (see calibrateFonts). A run keeps
       // its OWN typeface only when we measured a sane scale; otherwise it falls back to
@@ -494,6 +562,11 @@ export function TextLayer({
           const runBox = { x: item.transform[4], y: item.transform[5], width: item.width, fontSize: pdfFontSize };
           const colors = sample ? sampleRunColors(sample, runBox) : undefined;
           const deco = sample ? detectDecorations(sample, runBox) : undefined;
+          // Mirror export's font-reuse gate: keep the run's OWN font only when it covers EVERY
+          // character of the new text; otherwise the whole run uses the bundled face (uniform and
+          // identical to export). When dropping the embedded font, reset sizeScale to 1 — the
+          // calibration k was measured for that font and would mis-size a bundled face.
+          const keepFont = !item.glyphCheck || coversAll(item.glyphCheck, value);
           if (item.psName && item.fontName && pageRef.current) {
             try {
               const fo = pageRef.current.commonObjs.has(item.fontName)
@@ -524,8 +597,8 @@ export function TextLayer({
             strike: deco?.strike,
             fontPsName: item.psName,
             ascent: item.ascent,
-            fontFamily: item.fontFamily,
-            sizeScale: item.sizeScale,
+            fontFamily: keepFont ? item.fontFamily : undefined,
+            sizeScale: keepFont ? item.sizeScale : 1,
             userDx: edit?.userDx,
             userDy: edit?.userDy,
             userScale: edit?.userScale,

@@ -74,7 +74,7 @@ function cropToRgba(dataUrl: string, sx: number, sy: number, sw: number, sh: num
 }
 const BTN = "flex h-10 w-10 items-center justify-center rounded-md hover:bg-neutral-100 active:bg-neutral-200";
 
-export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
+export function ObjectCanvas({ bytes, textOnly = false }: { bytes: Uint8Array; textOnly?: boolean }) {
   const [pages, setPages] = useState(0);
   const [pageIndex, setPageIndex] = useState(0);
   const [page, setPage] = useState<RenderedPage | null>(null);
@@ -248,7 +248,7 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
     const v = viewRef.current;
     const bx = (clientX - rect.left - v.tx) / v.scale;
     const by = (clientY - rect.top - v.ty) / v.scale;
-    const hit = hitTestObject(objects, page, bx, by);
+    const hit = hitTestObject(objects, page, bx, by, textOnly ? "text" : undefined);
     setSelectedId(hit ? hit.id : null);
   }
 
@@ -553,8 +553,11 @@ export function ObjectCanvas({ bytes }: { bytes: Uint8Array }) {
     setBusy(true);
     try {
       await beforeEdit();
-      await PdfEngine.setObjectText({ page: pageIndex, index: selectedId, text });
-      await refresh(selectedId);
+      // In-place native edit (no cover box). Keeps the original typeface when it covers the new
+      // text, else substitutes a bundled face so Turkish/new glyphs render. Substitution rebuilds
+      // the object, so re-select whatever index the engine returns.
+      const { index } = await PdfEngine.replaceText({ page: pageIndex, index: selectedId, text });
+      await refresh(index);
       setTextInput(null);
     } catch (e) {
       setError(msg(e));

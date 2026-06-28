@@ -11,6 +11,8 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 
 /**
  * Native PDF object-editing engine (PDFium) — Phase 0: openDoc + renderPage wired to PDFium via
@@ -234,6 +236,49 @@ public class PdfEnginePlugin extends Plugin {
         }
     }
 
+    /**
+     * Replace a text object's string, in place, via the native engine (no cover box). Tries the
+     * object's OWN embedded font first; if that can't render the new text (returns -1), substitutes a
+     * bundled full TTF ({@code face} = sans|serif|mono with -bold/-italic/-bolditalic) so Turkish and
+     * new glyphs always render. Optional {@code color} ("#rrggbb"); omitted keeps the original.
+     * Resolves the object's (possibly new) index.
+     */
+    @PluginMethod
+    public void replaceText(PluginCall call) {
+        Integer page = call.getInt("page");
+        Integer index = call.getInt("index");
+        String text = call.getString("text");
+        if (page == null || index == null || text == null) {
+            call.reject("replaceText: missing page/index/text");
+            return;
+        }
+        String face = call.getString("face"); // optional explicit override; else auto-detected
+        String hex = call.getString("color"); // null = keep the original fill colour
+        int r = -1, g = -1, b = -1, a = -1;
+        if (hex != null) {
+            int[] rgb = parseHex(hex);
+            r = rgb[0]; g = rgb[1]; b = rgb[2]; a = 255;
+        }
+        synchronized (this) {
+            if (docHandle == 0) { call.reject("replaceText: no open document"); return; }
+            // Pick the closest metric-compatible bundled face from the object's OWN font (Arial→Arimo,
+            // Times→Tinos, Calibri→Carlito, Courier→mono) so a substituted edit looks ~identical.
+            if (face == null || face.isEmpty()) {
+                String detected = PdfiumBridge.nativeGetTextFace(docHandle, page, index);
+                face = (detected != null && !detected.isEmpty()) ? detected : "sans";
+            }
+            // Native keeps the embedded font when its subset covers the new text, else substitutes
+            // this TTF (so glyphs the subset lacks don't render empty).
+            byte[] font = readFontAsset(face);
+            if (font == null) { call.reject("replaceText: bundled font asset missing"); return; }
+            int ni = PdfiumBridge.nativeReplaceText(docHandle, page, index, text, font, r, g, b, a);
+            if (ni < 0) { call.reject("replaceText: failed"); return; }
+            JSObject ret = new JSObject();
+            ret.put("index", ni);
+            call.resolve(ret);
+        }
+    }
+
     /** Delete an object from a page. Object indices shift afterwards — re-list on the JS side. */
     @PluginMethod
     public void deleteObject(PluginCall call) {
@@ -310,6 +355,29 @@ public class PdfEnginePlugin extends Plugin {
             JSObject ret = new JSObject();
             ret.put("data", Base64.encodeToString(bytes, Base64.NO_WRAP));
             call.resolve(ret);
+        }
+    }
+
+    /**
+     * Read a bundled fallback face from the web assets (cap-synced to assets/public/fonts).
+     * `face` = e.g. "sans", "serif-bold", "mono-italic". Falls back to plain sans if the exact
+     * cut is missing, then null if even that fails.
+     */
+    private byte[] readFontAsset(String face) {
+        byte[] bytes = tryAsset("public/fonts/editor-" + face + ".ttf");
+        if (bytes == null) bytes = tryAsset("public/fonts/editor-sans.ttf");
+        return bytes;
+    }
+
+    private byte[] tryAsset(String path) {
+        try (InputStream is = getContext().getAssets().open(path)) {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = is.read(buf)) > 0) baos.write(buf, 0, n);
+            return baos.toByteArray();
+        } catch (IOException e) {
+            return null;
         }
     }
 

@@ -57,6 +57,19 @@ export interface PdfEnginePlugin {
   setObjectColor(options: { page: number; index: number; color: string }): Promise<void>;
   /** Replace a text object's string (kept in its existing font). */
   setObjectText(options: { page: number; index: number; text: string }): Promise<void>;
+  /**
+   * Replace a text object's string IN PLACE (no cover box). Keeps the original typeface when it
+   * covers the new text; otherwise substitutes a bundled face (`face` = sans|serif|mono optionally
+   * with -bold/-italic/-bolditalic) so Turkish/new glyphs render. Optional `color` ("#rrggbb");
+   * omitted keeps the original. Resolves the object's (possibly new) index.
+   */
+  replaceText(options: {
+    page: number;
+    index: number;
+    text: string;
+    face?: string;
+    color?: string;
+  }): Promise<{ index: number }>;
   /** Delete an object; object indices shift afterwards, so re-list the page. */
   deleteObject(options: { page: number; index: number }): Promise<void>;
   /** Move an object to front/back (Z-order); resolves its new index. */
